@@ -83,7 +83,7 @@ func NewProducer(ctx context.Context, prometheusEnabled bool, projectID string, 
 func (p *Producer) Produce(entry *telemetry.Record) {
 	ctx := context.Background()
 
-	topicName := telemetry.BuildTopicName(p.namespace, entry.TxType)
+	topicName := "telemetry"
 	logInfo := logrus.LogInfo{"topic_name": topicName, "txid": entry.Txid}
 	pubsubTopic, err := p.createTopicIfNotExists(ctx, topicName)
 
