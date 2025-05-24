@@ -3,6 +3,7 @@ package nats
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
@@ -52,7 +53,28 @@ type Config struct {
 func NewProducer(config *Config, namespace string, prometheusEnabled bool, metricsCollector metrics.MetricCollector, airbrakeHandler *airbrake.Handler, ackChan chan (*telemetry.Record), reliableAckTxTypes map[string]interface{}, logger *logrus.Logger) (telemetry.Producer, error) {
 	registerMetricsOnce(metricsCollector)
 
-	natsConn, err := NatsConnect(config.URL)
+	natsConn, err := NatsConnect(
+		config.URL,
+		nats.Name("Tesla Fleet Telemetry"),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(time.Second),
+		nats.ClosedHandler(func(conn *nats.Conn) {
+			logger.ActivityLog("nats_closed", logrus.LogInfo{"reason": conn.LastError()})
+		}),
+		nats.ErrorHandler(func(conn *nats.Conn, sub *nats.Subscription, err error) {
+			logger.ActivityLog("nats_error", logrus.LogInfo{"error": err, "subject": sub.Subject})
+		}),
+		nats.ConnectHandler(func(conn *nats.Conn) {
+			logger.ActivityLog("nats_connected", logrus.LogInfo{})
+		}),
+		nats.ReconnectHandler(func(conn *nats.Conn) {
+			logger.ActivityLog("nats_reconnected", logrus.LogInfo{})
+		}),
+		nats.DisconnectErrHandler(func(conn *nats.Conn, err error) {
+			logger.ActivityLog("nats_disconnected", logrus.LogInfo{"error": err})
+		}),
+	)
 	if err != nil {
 		return nil, err
 	}
