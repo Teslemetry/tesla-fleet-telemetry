@@ -97,13 +97,24 @@ func NewProducer(config *Config, namespace string, prometheusEnabled bool, metri
 func (p *Producer) Produce(entry *telemetry.Record) {
 	// Hardcode the namespace for now
 	subject := fmt.Sprintf("telemetry.%s.%s", entry.Vin, entry.TxType)
+	subjectbuf := fmt.Sprintf("telemetrybuf.%s.%s", entry.Vin, entry.TxType)
 
-	err := p.natsConn.Publish(subject, entry.Payload())
+	bytes, err := entry.GetJSONPayload()
+	if err != nil {
+		p.logError(err)
+		return
+	}
+	err = p.natsConn.Publish(subject, bytes)
 	if err != nil {
 		p.logError(err)
 		return
 	}
 	p.ProcessReliableAck(entry)
+	err = p.natsConn.Publish(subjectbuf, entry.Payload())
+	if err != nil {
+		p.logError(err)
+		return
+	}
 	metricsRegistry.producerCount.Inc(map[string]string{"record_type": entry.TxType})
 	metricsRegistry.bytesTotal.Add(int64(entry.Length()), map[string]string{"record_type": entry.TxType})
 }
