@@ -3,7 +3,6 @@ package nats
 import (
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
@@ -58,12 +57,12 @@ func NewProducer(config *Config, namespace string, prometheusEnabled bool, metri
 		nats.Name("Tesla Fleet Telemetry"),
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
-		nats.ReconnectWait(time.Second),
 		nats.ClosedHandler(func(conn *nats.Conn) {
-			logger.ActivityLog("nats_closed", logrus.LogInfo{"reason": conn.LastError()})
+			logger.ErrorLog("nats_closed", conn.LastError(), logrus.LogInfo{"message": "NATS closed with error, shutting down server"})
+			panic(fmt.Sprintf("NATS disconnected with error: %v", conn.LastError()))
 		}),
 		nats.ErrorHandler(func(conn *nats.Conn, sub *nats.Subscription, err error) {
-			logger.ActivityLog("nats_error", logrus.LogInfo{"error": err, "subject": sub.Subject})
+			logger.ErrorLog("nats_error", err, logrus.LogInfo{"error": err, "subject": sub.Subject})
 		}),
 		nats.ConnectHandler(func(conn *nats.Conn) {
 			logger.ActivityLog("nats_connected", logrus.LogInfo{})
@@ -96,25 +95,18 @@ func NewProducer(config *Config, namespace string, prometheusEnabled bool, metri
 // Produce asynchronously sends the record payload to NATS
 func (p *Producer) Produce(entry *telemetry.Record) {
 	// Hardcode the namespace for now
-	subject := fmt.Sprintf("telemetry.%s.%s", entry.Vin, entry.TxType)
-	subjectbuf := fmt.Sprintf("telemetrybuf.%s.%s", entry.Vin, entry.TxType)
-
-	bytes, err := entry.GetJSONPayload()
-	if err != nil {
-		p.logError(err)
-		return
+	topic := entry.TxType
+	if topic == "V" {
+		topic = "data"
 	}
-	err = p.natsConn.Publish(subject, bytes)
+	subject := fmt.Sprintf("telemetry.%s.%s", entry.Vin, topic)
+
+	err := p.natsConn.Publish(subject, entry.Payload())
 	if err != nil {
 		p.logError(err)
 		return
 	}
 	p.ProcessReliableAck(entry)
-	err = p.natsConn.Publish(subjectbuf, entry.Payload())
-	if err != nil {
-		p.logError(err)
-		return
-	}
 	metricsRegistry.producerCount.Inc(map[string]string{"record_type": entry.TxType})
 	metricsRegistry.bytesTotal.Add(int64(entry.Length()), map[string]string{"record_type": entry.TxType})
 }
