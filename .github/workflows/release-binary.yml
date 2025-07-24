@@ -1,0 +1,101 @@
+name: Build and Release Binary
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release"
+        required: true
+        type: string
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.23.0
+
+      - name: Set up protoc
+        run: |
+          wget https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip
+          unzip protoc-28.3-linux-x86_64.zip
+          sudo mv bin/protoc /usr/local/bin/protoc
+          sudo mv include/* /usr/local/include/
+
+      - name: Install protoc-gen-go
+        run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
+
+      - name: Generate protobuf files
+        run: make generate-protos
+
+      - name: Install ZMQ dependencies
+        run: sudo apt update -y && sudo apt upgrade -y && sudo apt install libsodium-dev libzmq3-dev
+
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build binary for Linux AMD64
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        run: |
+          go build --ldflags 'extldflags="-static"' \
+            -v -o fleet-telemetry-linux-amd64 cmd/main.go
+
+      - name: Create tarball
+        run: |
+          tar -czf fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz fleet-telemetry-linux-amd64
+
+      - name: Generate checksums
+        run: |
+          sha256sum fleet-telemetry-linux-amd64 > fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+          sha256sum fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz >> fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+
+      - name: Upload binary to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          files: |
+            fleet-telemetry-linux-amd64
+            fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz
+            fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+          body: |
+            ## Fleet Telemetry ${{ steps.get_version.outputs.VERSION }}
+
+            ### Downloads
+            - **Binary**: `fleet-telemetry-linux-amd64`
+            - **Archive**: `fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz`
+            - **Checksums**: `fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256`
+
+            ### Installation
+            ```bash
+            # Download the binary
+            wget https://github.com/teslamotors/fleet-telemetry/releases/download/${{ steps.get_version.outputs.VERSION }}/fleet-telemetry-linux-amd64
+
+            # Make it executable
+            chmod +x fleet-telemetry-linux-amd64
+
+            # Verify checksum
+            wget https://github.com/teslamotors/fleet-telemetry/releases/download/${{ steps.get_version.outputs.VERSION }}/fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+            sha256sum -c fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
