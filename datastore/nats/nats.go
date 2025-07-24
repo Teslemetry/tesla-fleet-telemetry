@@ -99,7 +99,7 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 	if topic == "V" {
 		topic = "data"
 	}
-	subject := fmt.Sprintf("telemetry.%s.%s", entry.Vin, topic)
+	subject := fmt.Sprintf("%s.%s.%s", p.namespace, entry.Vin, topic)
 
 	err := p.natsConn.Publish(subject, entry.Payload())
 	if err != nil {
