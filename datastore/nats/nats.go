@@ -45,7 +45,8 @@ var (
 
 // Config for NATS producer
 type Config struct {
-	URL string `json:"url"`
+	URL  string `json:"url"`
+	Name string `json:"name"`
 }
 
 // NewProducer establishes the NATS connection and define the dispatch method
@@ -54,7 +55,7 @@ func NewProducer(config *Config, namespace string, prometheusEnabled bool, metri
 
 	natsConn, err := NatsConnect(
 		config.URL,
-		nats.Name("Tesla Fleet Telemetry"),
+		nats.Name(config.Name),
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
 		nats.ClosedHandler(func(conn *nats.Conn) {
