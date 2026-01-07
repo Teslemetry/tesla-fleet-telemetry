@@ -35,9 +35,9 @@ type Config struct {
 
 // Collector is an OpenTelemetry based implementation of the stats collector
 type Collector struct {
-	meter          metric.Meter
-	meterProvider  *sdkmetric.MeterProvider
-	logger         *logrus.Logger
+	meter         metric.Meter
+	meterProvider *sdkmetric.MeterProvider
+	logger        *logrus.Logger
 }
 
 // NewCollector creates a metric collector which sends data via OpenTelemetry
