@@ -1,8 +1,6 @@
 module github.com/teslamotors/fleet-telemetry
 
-go 1.24.0
-
-toolchain go1.24.7
+go 1.23.0
 
 require (
 	cloud.google.com/go/pubsub v1.30.0
