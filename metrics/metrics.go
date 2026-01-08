@@ -9,6 +9,7 @@ import (
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/noop"
+	"github.com/teslamotors/fleet-telemetry/metrics/adapter/otel"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/prometheus"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/statsd"
 )
@@ -20,6 +21,9 @@ type MonitoringConfig struct {
 
 	// Statsd metrics if you are not using prometheus
 	Statsd *StatsdConfig `json:"statsd,omitempty"`
+
+	// OpenTelemetry metrics configuration
+	OpenTelemetry *otel.Config `json:"otel,omitempty"`
 
 	// ProfilerPort if non-zero enable http profiler on this port
 	ProfilerPort int `json:"profiler_port,omitempty"`
@@ -54,6 +58,7 @@ type MetricCollector interface {
 func NewCollector(monitoringConfig *MonitoringConfig, logger *logrus.Logger) MetricCollector {
 	isPrometheus := monitoringConfig != nil && monitoringConfig.PrometheusMetricsPort > 0
 	isStatsd := monitoringConfig != nil && monitoringConfig.Statsd != nil
+	isOpenTelemetry := monitoringConfig != nil && monitoringConfig.OpenTelemetry != nil
 
 	if isPrometheus {
 		return prometheus.NewCollector()
@@ -65,6 +70,14 @@ func NewCollector(monitoringConfig *MonitoringConfig, logger *logrus.Logger) Met
 			flushDuration = time.Duration(monitoringConfig.Statsd.FlushPeriod) * time.Millisecond
 		}
 		return statsd.NewCollector(monitoringConfig.Statsd.HostPort, monitoringConfig.Statsd.Prefix, logger, flushDuration)
+	}
+
+	if isOpenTelemetry {
+		collector := otel.NewCollector(monitoringConfig.OpenTelemetry, logger)
+		if collector != nil {
+			return collector
+		}
+		logger.ActivityLog("config_otel_collector_failed_fallback_to_noop", nil)
 	}
 
 	logger.ActivityLog("config_skipping_empty_metrics_provider", nil)
