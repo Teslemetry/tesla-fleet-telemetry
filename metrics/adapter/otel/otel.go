@@ -60,17 +60,20 @@ func NewCollector(cfg *Config, logger *logrus.Logger) *Collector {
 		exportInterval = 60 * time.Second
 	}
 
-	// Create resource
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceNameKey.String(serviceName),
+	// Create resource with explicit service name
+	// Note: We avoid resource.Merge with resource.Default() because the default
+	// process detector sets "unknown_service:binary_name" which can override our service name
+	res, err := resource.New(
+		ctx,
+		resource.WithAttributes(
+			semconv.ServiceName(serviceName),
 		),
+		resource.WithProcessRuntimeDescription(),
+		resource.WithTelemetrySDK(),
 	)
 	if err != nil {
 		logger.ErrorLog("otel_resource_creation_failed", err, nil)
-		res = resource.Default()
+		res = resource.NewSchemaless(semconv.ServiceName(serviceName))
 	}
 
 	// Create exporter based on protocol
