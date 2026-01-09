@@ -20,11 +20,11 @@ var (
 )
 
 // LoadApplicationConfiguration loads the configuration from args and config files
-func LoadApplicationConfiguration() (config *Config, logger *logrus.Logger, err error) {
+func LoadApplicationConfiguration() (config *Config, logger *logrus.Logger, shutdownFuncs []func() error, err error) {
 
 	logger, err = logrus.NewBasicLogrusLogger("fleet-telemetry")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	log.SetOutput(logger)
 
@@ -32,12 +32,18 @@ func LoadApplicationConfiguration() (config *Config, logger *logrus.Logger, err 
 
 	config, err = loadApplicationConfig(configFilePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	config.configureLogger(logger)
 	config.configureMetricsCollector(logger)
-	return config, logger, nil
+
+	// Configure OTel logging if enabled
+	if otelLogShutdown := config.ConfigureOTelLogging(logger); otelLogShutdown != nil {
+		shutdownFuncs = append(shutdownFuncs, otelLogShutdown)
+	}
+
+	return config, logger, shutdownFuncs, nil
 }
 
 func loadApplicationConfig(configFilePath string) (*Config, error) {

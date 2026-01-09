@@ -17,11 +17,20 @@ import (
 func main() {
 	var err error
 
-	config, logger, err := config.LoadApplicationConfiguration()
+	config, logger, shutdownFuncs, err := config.LoadApplicationConfiguration()
 	if err != nil {
 		// logger is not available yet
 		panic(fmt.Sprintf("error=load_service_config value=\"%s\"", err.Error()))
 	}
+
+	// Defer shutdown functions (e.g., OTel logging)
+	defer func() {
+		for _, shutdownFunc := range shutdownFuncs {
+			if err := shutdownFunc(); err != nil {
+				logger.ErrorLog("shutdown_func_error", err, nil)
+			}
+		}
+	}()
 
 	if config.Monitoring != nil && config.Monitoring.ProfilingPath != "" {
 		if config.Monitoring.ProfilerFile, err = os.Create(config.Monitoring.ProfilingPath); err != nil {

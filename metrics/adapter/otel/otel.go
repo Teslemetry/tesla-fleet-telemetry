@@ -31,6 +31,9 @@ type Config struct {
 
 	// Insecure disables TLS for the connection
 	Insecure bool `json:"insecure,omitempty"`
+
+	// Logging enables sending logs via OTLP in addition to metrics
+	Logging bool `json:"logging,omitempty"`
 }
 
 // Collector is an OpenTelemetry based implementation of the stats collector

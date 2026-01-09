@@ -198,3 +198,8 @@ func (l *Logger) getEntry(info LogInfo) *logrus.Entry {
 
 	return l.logger
 }
+
+// AddHook adds a hook to the underlying logrus logger
+func (l *Logger) AddHook(hook logrus.Hook) {
+	logrus.AddHook(hook)
+}

@@ -264,6 +264,37 @@ func (c *Config) configureMetricsCollector(logger *logrus.Logger) {
 	c.MetricCollector = metrics.NewCollector(c.Monitoring, logger)
 }
 
+// ConfigureOTelLogging sets up the OpenTelemetry logging hook if enabled
+// Returns the hook's shutdown function (or nil if not enabled)
+func (c *Config) ConfigureOTelLogging(logger *logrus.Logger) func() error {
+	if c.Monitoring == nil || c.Monitoring.OpenTelemetry == nil || !c.Monitoring.OpenTelemetry.Logging {
+		return nil
+	}
+
+	otelCfg := c.Monitoring.OpenTelemetry
+	hookCfg := &logrus.OTelConfig{
+		Endpoint:    otelCfg.Endpoint,
+		ServiceName: otelCfg.ServiceName,
+		Protocol:    otelCfg.Protocol,
+		Insecure:    otelCfg.Insecure,
+	}
+
+	hook, err := logrus.NewOTelHook(hookCfg)
+	if err != nil {
+		logger.ErrorLog("otel_logging_hook_creation_failed", err, nil)
+		return nil
+	}
+
+	logger.AddHook(hook)
+	logger.ActivityLog("otel_logging_enabled", logrus.LogInfo{
+		"endpoint":     otelCfg.Endpoint,
+		"protocol":     otelCfg.Protocol,
+		"service_name": otelCfg.ServiceName,
+	})
+
+	return hook.Shutdown
+}
+
 func (c *Config) prometheusEnabled() bool {
 	if c.Monitoring != nil && c.Monitoring.PrometheusMetricsPort > 0 {
 		return true
