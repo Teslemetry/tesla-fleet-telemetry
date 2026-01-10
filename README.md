@@ -183,13 +183,49 @@ On the vehicle, Fleet Telemetry client behave similarly to how the connectivity 
 If you have metrics enabled, you can use it to track count of incoming signals. This can help you identify approximate billing for your service. There are two ways to track signals. By default, it tracks signals per record_type (\*prefix\*`V` and \*prefix\*`alerts`). If you wish to track signals for a subset of VINs, you can add `vins_signal_tracking_enabled` in the config file which will track metrics for usage from those particular vins as well. 
 
 ## Metrics
-Configure and use Prometheus or a StatsD-interface supporting data store for metrics. The integration test runs Fleet Telemetry with [grafana](https://grafana.com/docs/grafana/latest/datasources/google-cloud-monitoring/), which is compatible with prometheus. It also has an example dashboard which tracks important metrics related to the hosted server. Sample screenshot for the [sample dashboard](./test/integration/grafana/provisioning/dashboards/dashboard.json):-
+Configure and use Prometheus, StatsD, or OpenTelemetry for metrics collection.
+
+### Prometheus
+The integration test runs Fleet Telemetry with [grafana](https://grafana.com/docs/grafana/latest/datasources/google-cloud-monitoring/), which is compatible with prometheus. It also has an example dashboard which tracks important metrics related to the hosted server. Sample screenshot for the [sample dashboard](./test/integration/grafana/provisioning/dashboards/dashboard.json):-
 
 ![Basic Dashboard](./doc/grafana-dashboard.png)
+
+### OpenTelemetry
+Fleet Telemetry supports exporting metrics and logs via [OpenTelemetry](https://opentelemetry.io/) (OTLP). This allows integration with any OTLP-compatible backend such as Grafana, Datadog, New Relic, or Jaeger.
+
+Configure OpenTelemetry in your config.json:
+```json
+{
+  "monitoring": {
+    "otel": {
+      "endpoint": "localhost:4317",
+      "service_name": "fleet-telemetry",
+      "protocol": "grpc",
+      "export_interval": 60000,
+      "insecure": false,
+      "logging": true
+    }
+  }
+}
+```
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `endpoint` | OTLP endpoint (e.g., `localhost:4317` for gRPC, `localhost:4318` for HTTP) | required |
+| `service_name` | Service name for resource identification | `fleet-telemetry` |
+| `protocol` | OTLP protocol: `grpc` or `http` | `grpc` |
+| `export_interval` | Metric export interval in milliseconds | `60000` |
+| `insecure` | Disable TLS for the connection | `false` |
+| `logging` | Also export logs via OTLP | `false` |
+
+For detailed configuration, see [metrics/adapter/otel/README.md](./metrics/adapter/otel/README.md).
 
 ## Logging
 
 To suppress [tls handshake error logging](https://cs.opensource.google/go/go/+/master:src/net/http/server.go;l=1933?q=%22TLS%20handshake%20error%20from%20%22&ss=go%2Fgo), set environment variable `SUPPRESS_TLS_HANDSHAKE_ERROR_LOGGING` to `true`. See [docker compose](./docker-compose.yml) for example.
+
+### OpenTelemetry Logging
+When `logging: true` is set in the OpenTelemetry configuration, all application logs are also exported via OTLP to your configured endpoint. Logs include severity levels, timestamps, and structured fields from the application.
 
 ## Protos
 Data is encapsulated into protobuf messages of different types. Protos can be recompiled via:
