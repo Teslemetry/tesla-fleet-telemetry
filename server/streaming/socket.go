@@ -186,9 +186,14 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 	go sm.writer()
 	var rl *rate.RateLimiter
 
-	if sm.config.RateLimit != nil && sm.config.RateLimit.Enabled {
+	if sm.config.RateLimit == nil {
+		// No rate limit config - apply default
+		rl = rate.New(100, 60*time.Second)
+	} else if sm.config.RateLimit.Enabled {
+		// Rate limiting explicitly enabled with custom values
 		rl = rate.New(sm.config.RateLimit.MessageLimit, sm.config.RateLimit.MessageIntervalTimeSecond)
 	}
+	// else: RateLimit config exists but Enabled is false - no rate limiting
 
 	var rateLimitStartTime time.Time
 	messagesRateLimited := 0
