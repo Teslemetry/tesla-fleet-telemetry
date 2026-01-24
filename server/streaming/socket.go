@@ -188,8 +188,6 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 
 	if sm.config.RateLimit != nil && sm.config.RateLimit.Enabled {
 		rl = rate.New(sm.config.RateLimit.MessageLimit, sm.config.RateLimit.MessageIntervalTimeSecond)
-	} else {
-		rl = rate.New(100, 60*time.Second)
 	}
 
 	var rateLimitStartTime time.Time
@@ -203,27 +201,27 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 		}
 
 		// check rate limit
-		if ok, _ := rl.Try(); !ok {
-			if messagesRateLimited == 0 {
-				rateLimitStartTime = time.Now()
-			}
-			// client exceeded the rate limit
-			messagesRateLimited++
-			record, _ := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
-			sm.trackSignalUsage(record)
-			metricsRegistry.rateLimitExceededCount.Inc(map[string]string{"device_id": sm.requestIdentity.DeviceID, "txtype": record.TxType})
-			if sm.config.RateLimit != nil && sm.config.RateLimit.Enabled {
+		if rl != nil {
+			if ok, _ := rl.Try(); !ok {
+				if messagesRateLimited == 0 {
+					rateLimitStartTime = time.Now()
+				}
+				// client exceeded the rate limit
+				messagesRateLimited++
+				record, _ := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
+				sm.trackSignalUsage(record)
+				metricsRegistry.rateLimitExceededCount.Inc(map[string]string{"device_id": sm.requestIdentity.DeviceID, "txtype": record.TxType})
 				continue
 			}
-		}
-		if messagesRateLimited > 0 {
-			parts := bytes.Split(message, []byte(","))
-			if len(parts) > 2 {
-				duration := time.Since(rateLimitStartTime) / time.Second
+			if messagesRateLimited > 0 {
+				parts := bytes.Split(message, []byte(","))
+				if len(parts) > 2 {
+					duration := time.Since(rateLimitStartTime) / time.Second
 
-				sm.logger.ErrorLog("rate_limit_exceeded", nil, logrus.LogInfo{"txid": parts[2], "duration_sec": duration, "messages_rate_limited": messagesRateLimited})
+					sm.logger.ErrorLog("rate_limit_exceeded", nil, logrus.LogInfo{"txid": parts[2], "duration_sec": duration, "messages_rate_limited": messagesRateLimited})
+				}
+				messagesRateLimited = 0
 			}
-			messagesRateLimited = 0
 		}
 		sm.ParseAndProcessRecord(serializer, message)
 	}
