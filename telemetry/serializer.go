@@ -1,16 +1,12 @@
 package telemetry
 
 import (
-	"context"
 	"fmt"
 	"time"
 
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/messages"
 	"github.com/teslamotors/fleet-telemetry/messages/tesla"
-	otelapi "go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // RequestIdentity stores identifiers for the socket connection
@@ -92,19 +88,8 @@ func (bs *BinarySerializer) Error(err error, record *Record) []byte {
 
 // Dispatch pushes the record to kafka for every rule associated to it
 func (bs *BinarySerializer) Dispatch(record *Record) {
-	ctx := record.Ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	tracer := otelapi.Tracer("fleet-telemetry")
 	for _, producer := range bs.DispatchRules[record.TxType] {
-		_, span := tracer.Start(ctx, "produce",
-			trace.WithAttributes(
-				attribute.String("dispatcher", fmt.Sprintf("%T", producer)),
-			),
-		)
 		producer.Produce(record)
-		span.End()
 	}
 }
 

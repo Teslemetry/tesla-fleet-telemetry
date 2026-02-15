@@ -20,7 +20,6 @@ import (
 	"github.com/teslamotors/fleet-telemetry/telemetry"
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -186,6 +185,16 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 		close(sm.stopChan)
 	}()
 
+	tracer := otelapi.Tracer("fleet-telemetry")
+	_, span := tracer.Start(context.Background(), "websocket_connection",
+		trace.WithAttributes(
+			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
+			attribute.String("connection.socket_id", sm.UUID),
+			attribute.String("network_interface", sm.GetNetworkInterface()),
+		),
+	)
+	defer span.End()
+
 	sm.logger.ActivityLog("socket_connected", sm.requestInfo)
 	go sm.writer()
 	var rl *rate.RateLimiter
@@ -206,6 +215,9 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 	for {
 		msgType, message, err := sm.Ws.ReadMessage()
 		if err != nil || msgType != sm.MsgType {
+			if err != nil {
+				span.RecordError(err)
+			}
 			return
 		}
 
@@ -220,6 +232,10 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 				record, _ := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
 				sm.trackSignalUsage(record)
 				metricsRegistry.rateLimitExceededCount.Inc(map[string]string{"device_id": sm.requestIdentity.DeviceID, "txtype": record.TxType})
+				span.AddEvent("rate_limit_exceeded", trace.WithAttributes(
+					attribute.String("record.tx_type", record.TxType),
+					attribute.Int("messages_dropped", messagesRateLimited),
+				))
 				continue
 			}
 			if messagesRateLimited > 0 {
@@ -232,7 +248,14 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 				messagesRateLimited = 0
 			}
 		}
-		sm.ParseAndProcessRecord(serializer, message)
+		record := sm.ParseAndProcessRecord(serializer, message)
+		if record != nil {
+			span.AddEvent("message_received", trace.WithAttributes(
+				attribute.String("record.tx_type", record.TxType),
+				attribute.String("record.txid", record.Txid),
+				attribute.Int("record.size_bytes", len(message)),
+			))
+		}
 	}
 }
 
@@ -246,34 +269,15 @@ func (sm *SocketManager) trackSignalUsage(record *telemetry.Record) {
 }
 
 // ParseAndProcessRecord reads incoming client message and dispatches to relevant producer
-func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySerializer, message []byte) {
-	tracer := otelapi.Tracer("fleet-telemetry")
-	ctx, span := tracer.Start(context.Background(), "process_message",
-		trace.WithAttributes(
-			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
-			attribute.String("connection.socket_id", sm.UUID),
-			attribute.Int("record.size_bytes", len(message)),
-		),
-	)
-	defer span.End()
-
+func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySerializer, message []byte) *telemetry.Record {
 	record, err := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
 	logInfo := logrus.LogInfo{"txid": record.Txid, "record_type": record.TxType}
 
-	span.SetAttributes(
-		attribute.String("record.tx_type", record.TxType),
-		attribute.String("record.txid", record.Txid),
-	)
-	record.Ctx = ctx
-
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-
 		if err == telemetry.ErrMessageTooBig {
 			sm.respondToVehicle(record, err)
 			metricsRegistry.recordTooBigCount.Inc(map[string]string{})
-			return
+			return record
 		}
 
 		switch typedError := err.(type) {
@@ -283,7 +287,7 @@ func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySeria
 			sm.logger.ErrorLog("unauthorized_sender_id", nil, logInfo)
 			metricsRegistry.unauthorizedSenderCount.Inc(map[string]string{})
 			sm.respondToVehicle(record, nil) // respond to the client message was accepted so they are not resending it over and over
-			return
+			return record
 		case *telemetry.UnknownMessageType:
 			logInfo["msg_txid"] = typedError.Txid
 			logInfo["msg_type"] = string(typedError.GuessedType)
@@ -292,7 +296,7 @@ func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySeria
 			sm.respondToVehicle(record, nil) // respond to the client message was accepted so they are not resending it over and over
 		default:
 			sm.respondToVehicle(record, err)
-			return
+			return record
 		}
 	}
 
@@ -304,6 +308,7 @@ func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySeria
 	if !sm.reliableAck(record) {
 		sm.respondToVehicle(record, nil)
 	}
+	return record
 }
 
 func (sm *SocketManager) reliableAck(record *telemetry.Record) bool {
