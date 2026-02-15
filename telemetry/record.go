@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -33,6 +34,7 @@ var (
 // Record is a structs that represents the telemetry records vehicles send to the backend
 // vin is used as kafka produce partitioning key by default, can be configured to random
 type Record struct {
+	Ctx                    context.Context
 	ProduceTime            time.Time
 	ReceivedTimestamp      int64
 	Serializer             *BinarySerializer

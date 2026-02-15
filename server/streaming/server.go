@@ -21,6 +21,10 @@ import (
 	"github.com/teslamotors/fleet-telemetry/protos"
 	"github.com/teslamotors/fleet-telemetry/server/airbrake"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
+	otelapi "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -150,6 +154,16 @@ func (s *Server) dispatchConnectivityEvent(sm *SocketManager, serializer *teleme
 		return nil
 	}
 
+	tracer := otelapi.Tracer("fleet-telemetry")
+	ctx, span := tracer.Start(context.Background(), "connectivity_event",
+		trace.WithAttributes(
+			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
+			attribute.String("connectivity.status", event.String()),
+			attribute.String("connection.socket_id", sm.UUID),
+		),
+	)
+	defer span.End()
+
 	connectivityMessage := &protos.VehicleConnectivity{
 		Vin:              sm.requestIdentity.DeviceID,
 		ConnectionId:     sm.UUID,
@@ -160,6 +174,8 @@ func (s *Server) dispatchConnectivityEvent(sm *SocketManager, serializer *teleme
 
 	payload, err := proto.Marshal(connectivityMessage)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
@@ -176,12 +192,17 @@ func (s *Server) dispatchConnectivityEvent(sm *SocketManager, serializer *teleme
 
 	message, err := streamMessage.ToBytes()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 	record, err := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
+	record.Ctx = ctx
 	for _, dispatcher := range connectivityDispatcher {
 		dispatcher.Produce(record)
 	}

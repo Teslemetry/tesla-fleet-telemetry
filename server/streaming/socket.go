@@ -18,6 +18,10 @@ import (
 	"github.com/teslamotors/fleet-telemetry/metrics"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
+	otelapi "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type contextKeyType int
@@ -243,10 +247,29 @@ func (sm *SocketManager) trackSignalUsage(record *telemetry.Record) {
 
 // ParseAndProcessRecord reads incoming client message and dispatches to relevant producer
 func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySerializer, message []byte) {
+	tracer := otelapi.Tracer("fleet-telemetry")
+	ctx, span := tracer.Start(context.Background(), "process_message",
+		trace.WithAttributes(
+			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
+			attribute.String("connection.socket_id", sm.UUID),
+			attribute.Int("record.size_bytes", len(message)),
+		),
+	)
+	defer span.End()
+
 	record, err := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
 	logInfo := logrus.LogInfo{"txid": record.Txid, "record_type": record.TxType}
 
+	span.SetAttributes(
+		attribute.String("record.tx_type", record.TxType),
+		attribute.String("record.txid", record.Txid),
+	)
+	record.Ctx = ctx
+
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+
 		if err == telemetry.ErrMessageTooBig {
 			sm.respondToVehicle(record, err)
 			metricsRegistry.recordTooBigCount.Inc(map[string]string{})
