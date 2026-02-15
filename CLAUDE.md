@@ -95,6 +95,16 @@ Uses **Ginkgo v2** test framework with **Gomega** assertions. Tests use `Describ
 
 Integration tests require Docker and spin up Kafka, Kinesis (localstack), Google Pub/Sub emulator, MQTT, Errbit, and monitoring services.
 
+## Post-Change Checks
+
+Run these after every code change (mirrors the CI in `.github/workflows/build.yml`):
+
+```bash
+make format           # Format code (must produce no diff)
+make linters          # Run golangci-lint
+make test             # Run unit tests
+```
+
 ## Configuration
 
 Server config example: `examples/server_config.json`
