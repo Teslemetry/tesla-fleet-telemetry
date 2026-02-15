@@ -12,13 +12,11 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // Provider wraps an OpenTelemetry TracerProvider
 type Provider struct {
 	tracerProvider *sdktrace.TracerProvider
-	tracer         trace.Tracer
 }
 
 // NewProvider creates an OTLP trace exporter and TracerProvider, sets it as the global provider
@@ -89,8 +87,6 @@ func NewProvider(cfg *otel.Config, logger *logrus.Logger) (*Provider, error) {
 	// Set as global trace provider
 	otelapi.SetTracerProvider(tracerProvider)
 
-	tracer := tracerProvider.Tracer("fleet-telemetry")
-
 	logger.ActivityLog("otel_tracing_enabled", logrus.LogInfo{
 		"endpoint":     cfg.Endpoint,
 		"protocol":     protocol,
@@ -100,7 +96,6 @@ func NewProvider(cfg *otel.Config, logger *logrus.Logger) (*Provider, error) {
 
 	return &Provider{
 		tracerProvider: tracerProvider,
-		tracer:         tracer,
 	}, nil
 }
 
@@ -114,7 +109,3 @@ func (p *Provider) Shutdown() error {
 	return nil
 }
 
-// Tracer returns the named tracer
-func (p *Provider) Tracer() trace.Tracer {
-	return p.tracer
-}
