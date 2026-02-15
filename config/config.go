@@ -29,6 +29,7 @@ import (
 	"github.com/teslamotors/fleet-telemetry/metrics"
 	"github.com/teslamotors/fleet-telemetry/server/airbrake"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
+	"github.com/teslamotors/fleet-telemetry/telemetry/tracing"
 )
 
 const (
@@ -293,6 +294,22 @@ func (c *Config) ConfigureOTelLogging(logger *logrus.Logger) func() error {
 	})
 
 	return hook.Shutdown
+}
+
+// ConfigureOTelTracing sets up the OpenTelemetry tracing provider if enabled
+// Returns the provider's shutdown function (or nil if not enabled)
+func (c *Config) ConfigureOTelTracing(logger *logrus.Logger) func() error {
+	if c.Monitoring == nil || c.Monitoring.OpenTelemetry == nil || !c.Monitoring.OpenTelemetry.Tracing {
+		return nil
+	}
+
+	provider, err := tracing.NewProvider(c.Monitoring.OpenTelemetry, logger)
+	if err != nil {
+		logger.ErrorLog("otel_tracing_provider_creation_failed", err, nil)
+		return nil
+	}
+
+	return provider.Shutdown
 }
 
 func (c *Config) prometheusEnabled() bool {

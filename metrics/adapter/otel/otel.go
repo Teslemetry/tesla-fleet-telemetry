@@ -34,6 +34,12 @@ type Config struct {
 
 	// Logging enables sending logs via OTLP in addition to metrics
 	Logging bool `json:"logging,omitempty"`
+
+	// Tracing enables sending traces via OTLP
+	Tracing bool `json:"tracing,omitempty"`
+
+	// TraceSampleRate is the ratio of traces to sample (0.0 to 1.0, default 1.0 = 100%)
+	TraceSampleRate float64 `json:"trace_sample_rate,omitempty"`
 }
 
 // Collector is an OpenTelemetry based implementation of the stats collector

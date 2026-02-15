@@ -8,7 +8,16 @@
     "monitoring": {
         "prometheus_metrics_port": 9090,
         "profiler_port": 4269,
-        "profiling_path": "/tmp/trace.out"
+        "profiling_path": "/tmp/trace.out",
+        "otel": {
+            "endpoint": "localhost:4317",
+            "service_name": "fleet-telemetry",
+            "protocol": "grpc",
+            "insecure": true,
+            "logging": true,
+            "tracing": true,
+            "trace_sample_rate": 1.0
+        }
     },
     "rate_limit": {
         "enabled": true,

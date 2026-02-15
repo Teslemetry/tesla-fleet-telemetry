@@ -43,6 +43,11 @@ func LoadApplicationConfiguration() (config *Config, logger *logrus.Logger, shut
 		shutdownFuncs = append(shutdownFuncs, otelLogShutdown)
 	}
 
+	// Configure OTel tracing if enabled
+	if otelTraceShutdown := config.ConfigureOTelTracing(logger); otelTraceShutdown != nil {
+		shutdownFuncs = append(shutdownFuncs, otelTraceShutdown)
+	}
+
 	return config, logger, shutdownFuncs, nil
 }
 
