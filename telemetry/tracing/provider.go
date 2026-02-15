@@ -108,4 +108,3 @@ func (p *Provider) Shutdown() error {
 	}
 	return nil
 }
-
