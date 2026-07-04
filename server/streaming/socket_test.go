@@ -44,13 +44,13 @@ var _ = Describe("Socket test", func() {
 
 	It("TestRecordsStatsToString", func() {
 		logInfo := sm.RecordsStatsToLogInfo()
-		Expect(logInfo["total"]).To(Equal("0"))
+		Expect(logInfo["total"]).To(Equal(0))
 
 		sm.RecordsStats["test"] = 42
 		logInfo = sm.RecordsStatsToLogInfo()
 
-		Expect(logInfo["total"]).To(Equal("42"))
-		Expect(logInfo["test"]).To(Equal("42"))
+		Expect(logInfo["total"]).To(Equal(42))
+		Expect(logInfo["test"]).To(Equal(42))
 		Expect(hook.AllEntries()).To(BeEmpty())
 	})
 
