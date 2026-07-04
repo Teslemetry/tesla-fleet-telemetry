@@ -1,12 +1,14 @@
 package logrus
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/mattn/go-colorable"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // LogType is a typedef to represent the various log levels
@@ -202,4 +204,18 @@ func (l *Logger) getEntry(info LogInfo) *logrus.Entry {
 // AddHook adds a hook to the underlying logrus logger
 func (l *Logger) AddHook(hook logrus.Hook) {
 	logrus.AddHook(hook)
+}
+
+// WithContext returns a copy of the Logger scoped to ctx. Subsequent log calls carry
+// ctx through to the OTel logging hook (so the SDK log bridge stamps trace_id/span_id
+// natively), and, when ctx holds a valid span, also get trace_id/span_id fields so
+// non-OTel (e.g. plain JSON) log output stays correlatable too.
+func (l *Logger) WithContext(ctx context.Context) *Logger {
+	child := *l
+	entry := l.logger.WithContext(ctx)
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		entry = entry.WithField("trace_id", sc.TraceID().String()).WithField("span_id", sc.SpanID().String())
+	}
+	child.logger = entry
+	return &child
 }

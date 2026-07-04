@@ -1,6 +1,7 @@
 package nats
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -10,11 +11,41 @@ import (
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter"
 	"github.com/teslamotors/fleet-telemetry/server/airbrake"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
+	otelapi "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // NatsConnect is a variable that holds the function to create a NATS connection
 // This allows for testing by replacing it with a mock
 var NatsConnect = nats.Connect
+
+// tracer is used for the PRODUCER span emitted on every NATS publish. It resolves
+// to the no-op tracer (near-zero overhead) when OTel tracing isn't configured.
+var tracer = otelapi.Tracer("fleet-telemetry")
+
+// natsHeaderCarrier adapts nats.Header to propagation.TextMapCarrier so W3C trace
+// context can be injected into outgoing message headers.
+type natsHeaderCarrier struct {
+	header nats.Header
+}
+
+func (c natsHeaderCarrier) Get(key string) string {
+	return c.header.Get(key)
+}
+
+func (c natsHeaderCarrier) Set(key, value string) {
+	c.header.Set(key, value)
+}
+
+func (c natsHeaderCarrier) Keys() []string {
+	keys := make([]string, 0, len(c.header))
+	for k := range c.header {
+		keys = append(keys, k)
+	}
+	return keys
+}
 
 // Producer client to handle NATS interactions
 type Producer struct {
@@ -93,17 +124,53 @@ func NewProducer(config *Config, namespace string, _ bool, metricsCollector metr
 	return producer, nil
 }
 
+// normalizeTopic maps a record's TxType to its NATS subject topic segment
+func normalizeTopic(txType string) string {
+	if txType == "V" {
+		return "data"
+	}
+	return txType
+}
+
+// buildSubject constructs the per-vehicle NATS subject for a record
+func buildSubject(namespace, vin, txType string) string {
+	return fmt.Sprintf("%s.%s.%s", namespace, vin, normalizeTopic(txType))
+}
+
+// publishSpanName builds a low-cardinality span name (VIN replaced with a wildcard)
+// matching the naming convention consumers use for their own spans on this subject
+func publishSpanName(namespace, txType string) string {
+	return fmt.Sprintf("publish %s.*.%s", namespace, normalizeTopic(txType))
+}
+
 // Produce asynchronously sends the record payload to NATS
 func (p *Producer) Produce(entry *telemetry.Record) {
-	// Hardcode the namespace for now
-	topic := entry.TxType
-	if topic == "V" {
-		topic = "data"
-	}
-	subject := fmt.Sprintf("%s.%s.%s", p.namespace, entry.Vin, topic)
+	subject := buildSubject(p.namespace, entry.Vin, entry.TxType)
 
-	err := p.natsConn.Publish(subject, entry.Payload())
-	if err != nil {
+	ctx, span := tracer.Start(context.Background(), publishSpanName(p.namespace, entry.TxType),
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			attribute.String("messaging.system", "nats"),
+			attribute.String("messaging.destination.name", subject),
+			attribute.String("messaging.operation", "publish"),
+			attribute.String("vehicle.vin", entry.Vin),
+			attribute.String("record.tx_type", entry.TxType),
+			attribute.String("record.txid", entry.Txid),
+		),
+	)
+	defer span.End()
+
+	msg := &nats.Msg{Subject: subject, Data: entry.Payload()}
+	// Only allocate/inject headers when tracing is actually configured (valid
+	// SpanContext); with the default no-op provider this is skipped entirely.
+	if span.SpanContext().IsValid() {
+		msg.Header = make(nats.Header)
+		otelapi.GetTextMapPropagator().Inject(ctx, natsHeaderCarrier{msg.Header})
+	}
+
+	if err := p.natsConn.PublishMsg(msg); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		p.logError(err)
 		return
 	}

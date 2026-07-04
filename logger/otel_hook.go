@@ -128,8 +128,14 @@ func (h *OTelHook) Fire(entry *logrus.Entry) error {
 		record.AddAttributes(attrs...)
 	}
 
-	// Emit the log record
-	h.otelLogger.Emit(context.Background(), record)
+	// Emit the log record. Passing entry.Context (when set via Logger.WithContext)
+	// lets the SDK log bridge stamp trace_id/span_id from the active span, so this
+	// log correlates with the trace in the backend.
+	ctx := context.Background()
+	if entry.Context != nil {
+		ctx = entry.Context
+	}
+	h.otelLogger.Emit(ctx, record)
 
 	return nil
 }
