@@ -9,6 +9,7 @@ import (
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
@@ -86,6 +87,10 @@ func NewProvider(cfg *otel.Config, logger *logrus.Logger) (*Provider, error) {
 
 	// Set as global trace provider
 	otelapi.SetTracerProvider(tracerProvider)
+
+	// Set as global propagator so producers (e.g. NATS) can inject W3C trace
+	// context into outgoing message headers for downstream consumers to join
+	otelapi.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	logger.ActivityLog("otel_tracing_enabled", logrus.LogInfo{
 		"endpoint":     cfg.Endpoint,

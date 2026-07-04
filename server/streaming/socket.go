@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -155,10 +157,30 @@ func (sm *SocketManager) ListenToWriteChannel() SocketMessage {
 	return msg
 }
 
+// isExpectedDisconnect reports whether err is one of the benign network/TLS
+// teardown errors seen whenever a vehicle drops its connection (lost signal,
+// sleep, reboot, ...), as opposed to an unexpected server-side fault.
+func isExpectedDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, websocket.ErrCloseSent) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	// crypto/tls wraps the underlying write error with this exact message when
+	// the peer already closed the raw TCP connection before we could send our
+	// own closeNotify alert - functionally a normal close, not a fault.
+	return strings.Contains(err.Error(), "failed to send closeNotify alert (but connection was closed anyway)")
+}
+
 // Close shuts down a socket connection for a single client and log metrics
 func (sm *SocketManager) Close() {
 	if err := sm.Ws.Close(); err != nil {
-		sm.logger.ErrorLog("websocket_close_err", err, nil)
+		if isExpectedDisconnect(err) {
+			sm.logger.ActivityLog("websocket_close_err", logrus.LogInfo{"error": err.Error()})
+		} else {
+			sm.logger.ErrorLog("websocket_close_err", err, nil)
+		}
 	}
 
 	socketMetrics := sm.RecordsStatsToLogInfo()
@@ -186,7 +208,7 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 	}()
 
 	tracer := otelapi.Tracer("fleet-telemetry")
-	_, span := tracer.Start(context.Background(), "websocket_connection",
+	ctx, span := tracer.Start(context.Background(), "websocket_connection",
 		trace.WithAttributes(
 			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
 			attribute.String("connection.socket_id", sm.UUID),
@@ -194,6 +216,12 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 		),
 	)
 	defer span.End()
+
+	// Scope all logging for this connection's lifetime to the span's context, so
+	// every log line emitted while handling this vehicle carries trace_id/span_id.
+	// sm.writer() is started below (as a goroutine), so this write happens-before
+	// its reads of sm.logger and needs no additional synchronization.
+	sm.logger = sm.logger.WithContext(ctx)
 
 	sm.logger.ActivityLog("socket_connected", sm.requestInfo)
 	go sm.writer()
@@ -357,7 +385,11 @@ func (sm *SocketManager) writer() {
 			err := sm.writeMessage(msg.MsgType, msg.Msg)
 			if err != nil {
 				metricsRegistry.socketErrorCount.Inc(map[string]string{})
-				sm.logger.ErrorLog("socket_err", err, logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID})
+				if isExpectedDisconnect(err) {
+					sm.logger.ActivityLog("socket_err", logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID, "error": err.Error()})
+				} else {
+					sm.logger.ErrorLog("socket_err", err, logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID})
+				}
 				return
 			}
 		}
