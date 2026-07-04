@@ -125,4 +125,8 @@ The "Build and Test" workflow (`.github/workflows/build.yml`) runs as one job: p
 
 `docker-compose.yml`'s `kinesis` service is pinned to `localstack/localstack:3.8`: newer `localstack/localstack` tags refuse to start at all without a paid `LOCALSTACK_AUTH_TOKEN`, even to serve community-tier services like Kinesis. Don't float this image back to `:latest`.
 
+`datastore/googlepubsub`'s `Producer.Produce` intentionally publishes **every** record type (V, connectivity, ...) to a single pubsub topic named after `namespace` (not `namespace_<recordtype>` like kafka/mqtt/zmq/kinesis) — see commit "Use custom topic". `test/integration` reflects this: it subscribes once to that shared topic and filters incoming messages by the `txtype` message attribute rather than using per-record-type topics.
+
+`test/integration/config.json`'s `monitoring` block sets `profiler_host`/`prometheus_metrics_host` to `0.0.0.0`. Production defaults these to `127.0.0.1` (see "Fix vehicle identity spoofing and bind monitoring servers to localhost") for security, but the integration test's HTTP checks run from a separate container on the compose network and need to reach `app:4269`/`app:9090`.
+
 Local dev note: this sandbox environment's default `go` is 1.19, too old for this module (`go 1.24.0` in go.mod). Install a matching toolchain before running `make lint`/`make test` locally.
