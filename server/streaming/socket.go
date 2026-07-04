@@ -193,9 +193,8 @@ func (sm *SocketManager) recordCloseReason(err error) {
 // Close shuts down a socket connection for a single client and log metrics
 func (sm *SocketManager) Close() {
 	if err := sm.Ws.Close(); err != nil {
-		if isExpectedDisconnect(err) {
-			sm.recordCloseReason(err)
-		} else {
+		sm.recordCloseReason(err)
+		if !isExpectedDisconnect(err) {
 			sm.logger.ErrorLog("websocket_close_err", err, nil)
 		}
 	}
@@ -415,9 +414,8 @@ func (sm *SocketManager) writer() {
 			err := sm.writeMessage(msg.MsgType, msg.Msg)
 			if err != nil {
 				metricsRegistry.socketErrorCount.Inc(map[string]string{})
-				if isExpectedDisconnect(err) {
-					sm.recordCloseReason(err)
-				} else {
+				sm.recordCloseReason(err)
+				if !isExpectedDisconnect(err) {
 					sm.logger.ErrorLog("socket_err", err, logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID})
 				}
 				return
