@@ -9,10 +9,17 @@ import (
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
+
+// defaultTraceSampleRate is used when config leaves TraceSampleRate unset (<=0).
+// The NATS producer now emits a PRODUCER span per publish (~5.5M spans/day
+// fleet-wide at ratio 1.0) so the default is a head sample, not "trace
+// everything" - set trace_sample_rate explicitly to override.
+const defaultTraceSampleRate = 0.01
 
 // Provider wraps an OpenTelemetry TracerProvider
 type Provider struct {
@@ -35,7 +42,7 @@ func NewProvider(cfg *otel.Config, logger *logrus.Logger) (*Provider, error) {
 
 	sampleRate := cfg.TraceSampleRate
 	if sampleRate <= 0 {
-		sampleRate = 1.0
+		sampleRate = defaultTraceSampleRate
 	}
 
 	// Create resource with explicit service name
@@ -77,15 +84,22 @@ func NewProvider(cfg *otel.Config, logger *logrus.Logger) (*Provider, error) {
 		return nil, err
 	}
 
-	// Create tracer provider with batch span processor and ratio-based sampler
+	// Create tracer provider with batch span processor and ratio-based sampler.
+	// ParentBased so a sampled parent (e.g. a future upstream traceparent, or a
+	// chunked session span) always keeps its children even when the ratio would
+	// otherwise drop them; today's spans are all roots so this is a no-op for them.
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(sampleRate)),
+		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(sampleRate))),
 	)
 
 	// Set as global trace provider
 	otelapi.SetTracerProvider(tracerProvider)
+
+	// Set as global propagator so producers (e.g. NATS) can inject W3C trace
+	// context into outgoing message headers for downstream consumers to join
+	otelapi.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	logger.ActivityLog("otel_tracing_enabled", logrus.LogInfo{
 		"endpoint":     cfg.Endpoint,
