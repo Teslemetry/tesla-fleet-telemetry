@@ -22,6 +22,7 @@ import (
 	"github.com/teslamotors/fleet-telemetry/telemetry"
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -244,7 +245,14 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 		msgType, message, err := sm.Ws.ReadMessage()
 		if err != nil || msgType != sm.MsgType {
 			if err != nil {
-				span.RecordError(err)
+				if isExpectedDisconnect(err) {
+					span.AddEvent("disconnect", trace.WithAttributes(
+						attribute.String("disconnect.reason", err.Error()),
+					))
+				} else {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, "read failure")
+				}
 			}
 			return
 		}
