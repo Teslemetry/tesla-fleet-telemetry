@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub" //nolint:staticcheck // TODO: migrate to cloud.google.com/go/pubsub/v2
 	. "github.com/onsi/gomega"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"google.golang.org/api/iterator"

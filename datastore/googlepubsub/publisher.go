@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub" //nolint:staticcheck // TODO: migrate to cloud.google.com/go/pubsub/v2
 
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/metrics"
@@ -80,7 +80,7 @@ func NewProducer(prometheusEnabled bool, projectID string, namespace string, met
 }
 
 // ProvisionTopics invoked at startup to verify all relevant topics are present
-func (p *Producer) ProvisionTopics(txTypes []string) error {
+func (p *Producer) ProvisionTopics(_ []string) error {
 	return nil
 }
 
@@ -121,19 +121,6 @@ func (p *Producer) ProcessReliableAck(entry *telemetry.Record) {
 		p.ackChan <- entry
 		metricsRegistry.reliableAckCount.Inc(map[string]string{"record_type": entry.TxType})
 	}
-}
-
-func (p *Producer) createTopicIfNotExists(ctx context.Context, topic string) (*pubsub.Topic, error) {
-	pubsubTopic := p.pubsubClient.Topic(topic)
-	exists, err := pubsubTopic.Exists(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if exists {
-		return pubsubTopic, nil
-	}
-
-	return p.pubsubClient.CreateTopic(ctx, topic)
 }
 
 // ReportError to airbrake and logger
