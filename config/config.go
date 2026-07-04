@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub" //nolint:staticcheck // TODO: migrate to cloud.google.com/go/pubsub/v2
 	githubairbrake "github.com/airbrake/gobrake/v5"
 
 	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"

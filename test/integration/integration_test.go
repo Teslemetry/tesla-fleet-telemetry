@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub" //nolint:staticcheck // TODO: migrate to cloud.google.com/go/pubsub/v2
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -40,6 +40,11 @@ const (
 
 	kinesisStreamName             = "test_V"
 	kinesisConnectivityStreamName = "test_connectivity"
+
+	// pubsubTopic is the single topic all record types are published to - see
+	// datastore/googlepubsub.Producer.Produce, which (unlike kafka/mqtt/zmq)
+	// publishes every record type to a topic named after the namespace alone.
+	pubsubTopic = "tesla_telemetry"
 )
 
 var expectedLocation = &protos.LocationValue{Latitude: -37.412374, Longitude: 122.145867}
@@ -80,7 +85,7 @@ var _ = Describe("Test messages", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		setEnv("PUBSUB_EMULATOR_HOST", pubsubHost)
-		pubsubConsumer, err = NewTestPubsubConsumer(projectID, []string{vehicleTopic, vehicleConnectivityTopic}, logger)
+		pubsubConsumer, err = NewTestPubsubConsumer(projectID, []string{pubsubTopic}, logger)
 		Expect(err).NotTo(HaveOccurred())
 
 		kafkaConsumer, err = kafka.NewConsumer(&kafka.ConfigMap{
@@ -168,7 +173,7 @@ var _ = Describe("Test messages", Ordered, func() {
 
 			var msg *pubsub.Message
 			Eventually(func() error {
-				msg, err = pubsubConsumer.FetchPubsubMessage(vehicleTopic)
+				msg, err = pubsubConsumer.FetchPubsubMessage(pubsubTopic, "V")
 				return err
 			}, time.Second*2, time.Millisecond*100).Should(BeNil())
 			Expect(msg).NotTo(BeNil())
@@ -249,7 +254,7 @@ var _ = Describe("Test messages", Ordered, func() {
 			var err error
 			var msg *pubsub.Message
 			Eventually(func() error {
-				msg, err = pubsubConsumer.FetchPubsubMessage(vehicleConnectivityTopic)
+				msg, err = pubsubConsumer.FetchPubsubMessage(pubsubTopic, "connectivity")
 				return err
 			}, time.Second*2, time.Millisecond*100).Should(BeNil())
 			Expect(msg).NotTo(BeNil())

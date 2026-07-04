@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	"cloud.google.com/go/pubsub"
+	"cloud.google.com/go/pubsub" //nolint:staticcheck // TODO: migrate to cloud.google.com/go/pubsub/v2
 	. "github.com/onsi/gomega"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"google.golang.org/api/iterator"
@@ -110,7 +110,11 @@ func (c *TestConsumer) ClearSubscriptions() {
 	}
 }
 
-func (c *TestConsumer) FetchPubsubMessage(topicID string) (*pubsub.Message, error) {
+// FetchPubsubMessage receives the next message on topicID whose "txtype"
+// attribute matches txType. All record types share a single pubsub topic
+// (see datastore/googlepubsub.Producer.Produce), so non-matching messages are
+// nacked for redelivery instead of being treated as the awaited message.
+func (c *TestConsumer) FetchPubsubMessage(topicID string, txType string) (*pubsub.Message, error) {
 	sub, ok := c.subs[topicID]
 	if !ok {
 		return nil, fmt.Errorf("unknown topic: %s", topicID)
@@ -123,6 +127,10 @@ func (c *TestConsumer) FetchPubsubMessage(topicID string) (*pubsub.Message, erro
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 
 	err := sub.Receive(cctx, func(_ context.Context, msg *pubsub.Message) {
+		if msg.Attributes["txtype"] != txType {
+			msg.Nack()
+			return
+		}
 		msg.Ack()
 		atomic.StorePointer(unsafepL, unsafe.Pointer(msg))
 		mu.Lock()
