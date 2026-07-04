@@ -189,7 +189,7 @@ explicitly in PR descriptions so a human can judge the tradeoff.
 - Teardown logging is deduplicated onto the single `socket_disconnected` line rather than emitted
   separately per source: `sm.recordCloseReason(err)` (mutex-guarded, first-error-wins, since the
   read loop, the writer goroutine, and `Close()`'s own `sm.Ws.Close()` can each observe a teardown
-  error) records the `isExpectedDisconnect`-classified error string, and `Close()` attaches it as
+  error) records the teardown error string, and `Close()` attaches it as
   `close_reason` on `socket_disconnected` instead of also logging a standalone `socket_err` /
   `websocket_close_err` line for the expected case. Genuinely unexpected errors still get their own
   `ErrorLog` (`socket_err` / `websocket_close_err`) in addition to feeding `close_reason` — this

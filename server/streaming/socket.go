@@ -176,7 +176,7 @@ func isExpectedDisconnect(err error) bool {
 	return strings.Contains(err.Error(), "failed to send closeNotify alert (but connection was closed anyway)")
 }
 
-// recordCloseReason stores the first classified teardown error seen across the
+// recordCloseReason stores the first teardown error seen across the
 // reader/writer goroutines, so socket_disconnected can report a single close_reason
 // regardless of which side (read, write, or ws.Close itself) observed it first.
 func (sm *SocketManager) recordCloseReason(err error) {
