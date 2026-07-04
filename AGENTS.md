@@ -172,3 +172,10 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   ClickStack sample (`socket_err` / `websocket_close_err`) and are normal vehicle disconnects, not
   faults — extend this allowlist rather than reverting to blanket `ErrorLog` if new benign
   teardown error strings show up.
+- The same `isExpectedDisconnect` classifier gates span hygiene in `ProcessTelemetry`'s read-error
+  path: an expected disconnect gets a `disconnect` span event (with the close reason as an
+  attribute) and no error status; anything else calls `span.RecordError(err)` and
+  `span.SetStatus(codes.Error, "read failure")`. Before this, every read error — expected or not —
+  called `span.RecordError`, producing ~31.8k `exception` events/day that were ~100% benign
+  teardown noise while `StatusCode` stayed `Unset` on all spans. Keep the log-side and span-side
+  classification using the same function so the two stay consistent as the allowlist grows.
