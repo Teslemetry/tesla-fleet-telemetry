@@ -83,7 +83,11 @@ services:
     command: [ "gcloud", "beta", "emulators", "pubsub", "start", "--host-port", "pubsub:8085" ]
 
   kinesis:
-    image: localstack/localstack
+    # Pinned: newer localstack/localstack tags require a paid LOCALSTACK_AUTH_TOKEN
+    # to start at all (even for community-tier services like Kinesis), which we
+    # don't have in CI. 3.8 is the last community-friendly release verified to
+    # start and serve Kinesis without a token.
+    image: localstack/localstack:3.8
     ports:
       - "127.0.0.1:4566:4566" # LocalStack Gateway
     healthcheck:

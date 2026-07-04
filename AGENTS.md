@@ -121,4 +121,8 @@ The "Build and Test" workflow (`.github/workflows/build.yml`) runs as one job: p
 
 `cloud.google.com/go/pubsub` is deprecated in favor of `.../pubsub/v2`; the v1 usages are suppressed with `//nolint:staticcheck` at each import until someone does the v2 migration — don't blanket-disable staticcheck for this, keep the nolint scoped to the pubsub import lines.
 
+`test/integration/Dockerfile`'s base image Go version must track `go.mod`'s `go` directive — the official `golang` images ship with `GOTOOLCHAIN=local`, so a mismatch fails `go mod download` outright instead of auto-fetching the right toolchain.
+
+`docker-compose.yml`'s `kinesis` service is pinned to `localstack/localstack:3.8`: newer `localstack/localstack` tags refuse to start at all without a paid `LOCALSTACK_AUTH_TOKEN`, even to serve community-tier services like Kinesis. Don't float this image back to `:latest`.
+
 Local dev note: this sandbox environment's default `go` is 1.19, too old for this module (`go 1.24.0` in go.mod). Install a matching toolchain before running `make lint`/`make test` locally.
