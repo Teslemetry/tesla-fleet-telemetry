@@ -16,7 +16,7 @@
             "insecure": true,
             "logging": true,
             "tracing": true,
-            "trace_sample_rate": 1.0
+            "trace_sample_rate": 0.01
         }
     },
     "rate_limit": {

@@ -38,7 +38,7 @@ type Config struct {
 	// Tracing enables sending traces via OTLP
 	Tracing bool `json:"tracing,omitempty"`
 
-	// TraceSampleRate is the ratio of traces to sample (0.0 to 1.0, default 1.0 = 100%)
+	// TraceSampleRate is the ratio of traces to sample (0.0 to 1.0, default 0.01 = 1%)
 	TraceSampleRate float64 `json:"trace_sample_rate,omitempty"`
 }
 
