@@ -53,8 +53,8 @@ func (s *SocketRegistry) NumConnectedSockets() int {
 }
 
 // CloseAllSockets asks every currently-connected socket to close, unblocking its
-// read loop so ProcessTelemetry's normal teardown runs (ending spans, emitting the
-// disconnect span and socket_disconnected log). Used by the graceful-drain path on
+// read loop so ProcessTelemetry's normal teardown runs (dispatching in-flight
+// records and logging socket_disconnected). Used by the graceful-drain path on
 // SIGTERM/SIGINT. It snapshots the sockets under the read lock and closes them
 // outside it, so the deregisterSocket calls that follow don't deadlock on the lock.
 func (s *SocketRegistry) CloseAllSockets() {

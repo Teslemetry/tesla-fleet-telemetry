@@ -222,13 +222,7 @@ Configure OpenTelemetry in your config.json:
 | `tracing` | Also export traces via OTLP | `false` |
 | `trace_sample_rate` | Ratio of traces to sample, from `0.0` to `1.0` | `0.01` |
 
-When tracing is enabled, each websocket connection emits short root spans instead of one long session span:
-
-- `websocket.connect`: emitted when the websocket is accepted.
-- `websocket.chunk`: rolling connection spans rotated every 30 minutes or 100 events, whichever comes first. Message, rate-limit, and disconnect events are attached to the active chunk.
-- `websocket.disconnect`: emitted during socket teardown with `duration_sec`, `records.total_bytes`, and `close_reason` when available.
-
-Correlate these spans by their shared `connection.socket_id` and `vehicle.vin` attributes. Connection logs are scoped to the active `websocket.chunk` span so OTLP logs include the current chunk's trace context.
+When tracing is enabled, spans follow the data path rather than the connection. Dispatchers that support tracing (currently the NATS producer) emit a short span per published record and inject the W3C trace context into the outgoing message, so downstream consumers join the same trace. There is intentionally no per-connection span: a vehicle can hold a websocket open for many hours, which makes a single session span unqueryable, so connection lifecycle is surfaced through the `socket_connected` / `socket_disconnected` logs (with `duration_sec`, `close_reason`, and per-record-type byte counts) and the `num_connected_sockets` metric instead.
 
 For detailed configuration, see [metrics/adapter/otel/README.md](./metrics/adapter/otel/README.md).
 
@@ -243,7 +237,7 @@ When `logging: true` is set in the OpenTelemetry configuration, all application 
 
 ## Shutdown
 
-On `SIGTERM` or `SIGINT`, Fleet Telemetry stops accepting new connections, requests all active websockets to close, and waits up to 25 seconds for socket teardown before exiting. This drain path lets each connection emit its final `socket_disconnected` log and OpenTelemetry chunk/disconnect spans; sockets closed by this path report `close_reason` as `server_shutdown`.
+On `SIGTERM` or `SIGINT`, Fleet Telemetry stops accepting new connections, requests all active websockets to close, and waits up to 25 seconds for socket teardown before exiting. This drain path lets each connection dispatch its in-flight records and emit its final `socket_disconnected` log, and lets the deferred OpenTelemetry provider flush any buffered publish spans; sockets closed by this path report `close_reason` as `server_shutdown`.
 
 ## Protos
 Data is encapsulated into protobuf messages of different types. Protos can be recompiled via:

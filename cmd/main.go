@@ -21,17 +21,18 @@ import (
 )
 
 // shutdownDrainTimeout bounds how long a SIGTERM/SIGINT drain waits for open
-// sockets to finish tearing down (ending their chunk/disconnect spans) before the
-// process proceeds to flush and exit anyway.
+// sockets to finish tearing down (dispatching in-flight records and logging
+// socket_disconnected) before the process proceeds to flush and exit anyway.
 const shutdownDrainTimeout = 25 * time.Second
 
 func main() {
 	var err error
 
 	// Trigger a graceful drain on SIGTERM/SIGINT so open sockets tear down cleanly
-	// (ending their chunk/disconnect spans) and the deferred shutdownFuncs -
-	// including the OTel provider flush - actually run, instead of the process being
-	// hard-killed with in-flight spans dropped.
+	// (dispatching in-flight telemetry and logging socket_disconnected) and the
+	// deferred shutdownFuncs - including the OTel provider flush that exports any
+	// buffered publish spans - actually run, instead of the process being
+	// hard-killed with in-flight work dropped.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -119,9 +120,11 @@ func startServer(ctx context.Context, stopSignal context.CancelFunc, config *con
 		// The listener stopped on its own (bind failure, unexpected error). Surface
 		// it to the caller, which panics so airbrake is notified.
 	case <-ctx.Done():
+		// Restore default signal handling so a second SIGTERM/SIGINT during the drain
+		// hard-exits instead of being swallowed.
 		stopSignal()
 		// SIGTERM/SIGINT: stop accepting new connections, then drain the open ones
-		// so each socket's ProcessTelemetry runs its normal span teardown.
+		// so each socket's ProcessTelemetry runs its normal teardown.
 		err = gracefulShutdown(server, registry, logger)
 	}
 
@@ -136,7 +139,7 @@ func startServer(ctx context.Context, stopSignal context.CancelFunc, config *con
 	return err
 }
 
-// gracefulShutdown stops the listener, closes every open socket so its span
+// gracefulShutdown stops the listener, closes every open socket so its read-loop
 // teardown runs, and waits (bounded by shutdownDrainTimeout) for them to finish.
 func gracefulShutdown(server *http.Server, registry *streaming.SocketRegistry, logger *logrus.Logger) error {
 	logger.ActivityLog("shutdown_signal_received", logrus.LogInfo{"open_sockets": registry.NumConnectedSockets()})
