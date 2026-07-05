@@ -1,8 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	_ "go.uber.org/automaxprocs"
 
@@ -14,8 +20,20 @@ import (
 	"github.com/teslamotors/fleet-telemetry/server/streaming"
 )
 
+// shutdownDrainTimeout bounds how long a SIGTERM/SIGINT drain waits for open
+// sockets to finish tearing down (ending their chunk/disconnect spans) before the
+// process proceeds to flush and exit anyway.
+const shutdownDrainTimeout = 25 * time.Second
+
 func main() {
 	var err error
+
+	// Trigger a graceful drain on SIGTERM/SIGINT so open sockets tear down cleanly
+	// (ending their chunk/disconnect spans) and the deferred shutdownFuncs -
+	// including the OTel provider flush - actually run, instead of the process being
+	// hard-killed with in-flight spans dropped.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	config, logger, shutdownFuncs, err := config.LoadApplicationConfiguration()
 	if err != nil {
@@ -56,10 +74,16 @@ func main() {
 			}
 		}()
 	}
-	panic(startServer(config, airbrakeNotifier, logger))
+
+	// A signal-driven graceful shutdown returns nil; only genuine server faults
+	// panic (so airbrake's NotifyOnPanic still fires for those). Either way the
+	// deferred shutdownFuncs run and flush the OTel provider.
+	if err := startServer(ctx, stop, config, airbrakeNotifier, logger); err != nil {
+		panic(err)
+	}
 }
 
-func startServer(config *config.Config, airbrakeNotifier *gobrake.Notifier, logger *logrus.Logger) (err error) {
+func startServer(ctx context.Context, stopSignal context.CancelFunc, config *config.Config, airbrakeNotifier *gobrake.Notifier, logger *logrus.Logger) (err error) {
 	logger.ActivityLog("starting_server", nil)
 	registry := streaming.NewSocketRegistry()
 
@@ -85,7 +109,22 @@ func startServer(config *config.Config, airbrakeNotifier *gobrake.Notifier, logg
 		return err
 	}
 
-	err = server.ListenAndServeTLS(config.TLS.ServerCert, config.TLS.ServerKey)
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- server.ListenAndServeTLS(config.TLS.ServerCert, config.TLS.ServerKey)
+	}()
+
+	select {
+	case err = <-serveErr:
+		// The listener stopped on its own (bind failure, unexpected error). Surface
+		// it to the caller, which panics so airbrake is notified.
+	case <-ctx.Done():
+		stopSignal()
+		// SIGTERM/SIGINT: stop accepting new connections, then drain the open ones
+		// so each socket's ProcessTelemetry runs its normal span teardown.
+		err = gracefulShutdown(server, registry, logger)
+	}
+
 	for dispatcher, producer := range dispatchers {
 		logger.ActivityLog("attempting_to_close", logrus.LogInfo{"dispatcher": dispatcher})
 		// We don't care if this fails. If it does, we'll just continue on.
@@ -95,4 +134,44 @@ func startServer(config *config.Config, airbrakeNotifier *gobrake.Notifier, logg
 	}
 	logger.ActivityLog("stopped_server", nil)
 	return err
+}
+
+// gracefulShutdown stops the listener, closes every open socket so its span
+// teardown runs, and waits (bounded by shutdownDrainTimeout) for them to finish.
+func gracefulShutdown(server *http.Server, registry *streaming.SocketRegistry, logger *logrus.Logger) error {
+	logger.ActivityLog("shutdown_signal_received", logrus.LogInfo{"open_sockets": registry.NumConnectedSockets()})
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
+	defer cancel()
+
+	// Shutdown stops accepting new connections. Hijacked websocket connections are
+	// not tracked by net/http, so we drain them explicitly below.
+	if shutdownErr := server.Shutdown(shutdownCtx); shutdownErr != nil && !errors.Is(shutdownErr, context.DeadlineExceeded) {
+		logger.ErrorLog("server_shutdown_error", shutdownErr, nil)
+	}
+
+	registry.CloseAllSockets()
+	waitForSocketsDrain(shutdownCtx, registry, logger)
+
+	logger.ActivityLog("stopped_server_graceful", nil)
+	return nil
+}
+
+// waitForSocketsDrain blocks until every socket has deregistered or the context
+// deadline is hit, polling the registry's connected-socket count.
+func waitForSocketsDrain(ctx context.Context, registry *streaming.SocketRegistry, logger *logrus.Logger) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if remaining := registry.NumConnectedSockets(); remaining == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			logger.ErrorLog("shutdown_drain_timeout", ctx.Err(), logrus.LogInfo{"remaining_sockets": registry.NumConnectedSockets()})
+			return
+		case <-ticker.C:
+		}
+	}
 }

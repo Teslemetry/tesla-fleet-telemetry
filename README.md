@@ -191,7 +191,7 @@ The integration test runs Fleet Telemetry with [grafana](https://grafana.com/doc
 ![Basic Dashboard](./doc/grafana-dashboard.png)
 
 ### OpenTelemetry
-Fleet Telemetry supports exporting metrics and logs via [OpenTelemetry](https://opentelemetry.io/) (OTLP). This allows integration with any OTLP-compatible backend such as Grafana, Datadog, New Relic, or Jaeger.
+Fleet Telemetry supports exporting metrics, logs, and traces via [OpenTelemetry](https://opentelemetry.io/) (OTLP). This allows integration with any OTLP-compatible backend such as Grafana, Datadog, New Relic, or Jaeger.
 
 Configure OpenTelemetry in your config.json:
 ```json
@@ -203,7 +203,9 @@ Configure OpenTelemetry in your config.json:
       "protocol": "grpc",
       "export_interval": 60000,
       "insecure": false,
-      "logging": true
+      "logging": true,
+      "tracing": true,
+      "trace_sample_rate": 0.01
     }
   }
 }
@@ -217,6 +219,16 @@ Configure OpenTelemetry in your config.json:
 | `export_interval` | Metric export interval in milliseconds | `60000` |
 | `insecure` | Disable TLS for the connection | `false` |
 | `logging` | Also export logs via OTLP | `false` |
+| `tracing` | Also export traces via OTLP | `false` |
+| `trace_sample_rate` | Ratio of traces to sample, from `0.0` to `1.0` | `0.01` |
+
+When tracing is enabled, each websocket connection emits short root spans instead of one long session span:
+
+- `websocket.connect`: emitted when the websocket is accepted.
+- `websocket.chunk`: rolling connection spans rotated every 30 minutes or 100 events, whichever comes first. Message, rate-limit, and disconnect events are attached to the active chunk.
+- `websocket.disconnect`: emitted during socket teardown with `duration_sec`, `records.total_bytes`, and `close_reason` when available.
+
+Correlate these spans by their shared `connection.socket_id` and `vehicle.vin` attributes. Connection logs are scoped to the active `websocket.chunk` span so OTLP logs include the current chunk's trace context.
 
 For detailed configuration, see [metrics/adapter/otel/README.md](./metrics/adapter/otel/README.md).
 
@@ -228,6 +240,10 @@ Connection lifecycle logs are emitted as `socket_connected` and `socket_disconne
 
 ### OpenTelemetry Logging
 When `logging: true` is set in the OpenTelemetry configuration, all application logs are also exported via OTLP to your configured endpoint. Logs include severity levels, timestamps, and structured fields from the application.
+
+## Shutdown
+
+On `SIGTERM` or `SIGINT`, Fleet Telemetry stops accepting new connections, requests all active websockets to close, and waits up to 25 seconds for socket teardown before exiting. This drain path lets each connection emit its final `socket_disconnected` log and OpenTelemetry chunk/disconnect spans; sockets closed by this path report `close_reason` as `server_shutdown`.
 
 ## Protos
 Data is encapsulated into protobuf messages of different types. Protos can be recompiled via:

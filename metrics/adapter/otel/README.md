@@ -1,6 +1,6 @@
-# OpenTelemetry Metrics and Logging
+# OpenTelemetry Metrics, Logging, and Tracing
 
-Fleet Telemetry supports exporting metrics and logs via the [OpenTelemetry Protocol (OTLP)](https://opentelemetry.io/docs/specs/otlp/). This enables integration with OTLP-compatible observability backends such as:
+Fleet Telemetry supports exporting metrics, logs, and traces via the [OpenTelemetry Protocol (OTLP)](https://opentelemetry.io/docs/specs/otlp/). This enables integration with OTLP-compatible observability backends such as:
 
 - Grafana (via Tempo, Loki, Mimir)
 - Datadog
@@ -22,7 +22,9 @@ Add the `otel` section under `monitoring` in your config.json:
       "protocol": "grpc",
       "export_interval": 60000,
       "insecure": false,
-      "logging": true
+      "logging": true,
+      "tracing": true,
+      "trace_sample_rate": 0.01
     }
   }
 }
@@ -38,6 +40,8 @@ Add the `otel` section under `monitoring` in your config.json:
 | `export_interval` | int | Interval between metric exports in milliseconds | `60000` (1 minute) |
 | `insecure` | bool | Disable TLS for the connection (use for local development) | `false` |
 | `logging` | bool | Enable log export via OTLP in addition to metrics | `false` |
+| `tracing` | bool | Enable trace export via OTLP in addition to metrics | `false` |
+| `trace_sample_rate` | float | Ratio of traces to sample, from `0.0` to `1.0` | `0.01` |
 
 ## Protocol Selection
 
@@ -87,6 +91,18 @@ Log severity mapping:
 | fatal | FATAL |
 | panic | FATAL4 |
 
+## Tracing
+
+When `tracing: true` is enabled, Fleet Telemetry exports OTLP spans through the same endpoint, protocol, TLS mode, and service name as metrics. The default sampler exports 1% of root traces; set `trace_sample_rate` to a value between `0.0` and `1.0` to override it.
+
+Connection spans are intentionally split into short root spans instead of a single websocket session span:
+
+- `websocket.connect`: emitted when a vehicle websocket is accepted.
+- `websocket.chunk`: rolling spans rotated every 30 minutes or 100 events, whichever comes first. The active chunk receives `message_received`, `rate_limit_exceeded`, and `disconnect` span events.
+- `websocket.disconnect`: emitted during teardown with `duration_sec`, `records.total_bytes`, and `close_reason` when available.
+
+Use the shared `connection.socket_id` and `vehicle.vin` attributes to correlate connect, chunk, and disconnect spans. Connection logs are scoped to the current `websocket.chunk` span, so OTLP logs include the active chunk's trace context.
+
 ## Example Configurations
 
 ### Local Development with Jaeger
@@ -96,7 +112,9 @@ Log severity mapping:
     "otel": {
       "endpoint": "localhost:4317",
       "protocol": "grpc",
-      "insecure": true
+      "insecure": true,
+      "tracing": true,
+      "trace_sample_rate": 1.0
     }
   }
 }
@@ -111,7 +129,9 @@ Log severity mapping:
       "service_name": "fleet-telemetry-prod",
       "protocol": "grpc",
       "export_interval": 30000,
-      "logging": true
+      "logging": true,
+      "tracing": true,
+      "trace_sample_rate": 0.01
     }
   }
 }
@@ -124,7 +144,8 @@ Log severity mapping:
     "otel": {
       "endpoint": "localhost:4318",
       "protocol": "http",
-      "service_name": "fleet-telemetry"
+      "service_name": "fleet-telemetry",
+      "tracing": true
     }
   }
 }
@@ -132,6 +153,6 @@ Log severity mapping:
 
 ## Notes
 
-- OpenTelemetry is mutually exclusive with Prometheus and StatsD. Only one metrics backend can be active at a time.
-- If the OpenTelemetry collector connection fails, the server will fall back to a no-op metrics collector and log a warning.
-- The `service_name` is attached as a resource attribute to all metrics and logs, making it easy to filter in your observability backend.
+- The OpenTelemetry metrics adapter is mutually exclusive with Prometheus and StatsD. Only one metrics backend can be active at a time; OTLP logging and tracing are enabled independently by `logging` and `tracing`.
+- If the OpenTelemetry metrics exporter connection fails, the server will fall back to a no-op metrics collector and log a warning.
+- The `service_name` is attached as a resource attribute to all metrics, logs, and traces, making it easy to filter in your observability backend.

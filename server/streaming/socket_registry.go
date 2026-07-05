@@ -51,3 +51,21 @@ func (s *SocketRegistry) NumConnectedSockets() int {
 
 	return s.counter
 }
+
+// CloseAllSockets asks every currently-connected socket to close, unblocking its
+// read loop so ProcessTelemetry's normal teardown runs (ending spans, emitting the
+// disconnect span and socket_disconnected log). Used by the graceful-drain path on
+// SIGTERM/SIGINT. It snapshots the sockets under the read lock and closes them
+// outside it, so the deregisterSocket calls that follow don't deadlock on the lock.
+func (s *SocketRegistry) CloseAllSockets() {
+	s.mutex.RLock()
+	sockets := make([]*SocketManager, 0, len(s.sockets))
+	for _, socket := range s.sockets {
+		sockets = append(sockets, socket)
+	}
+	s.mutex.RUnlock()
+
+	for _, socket := range sockets {
+		socket.RequestClose()
+	}
+}
