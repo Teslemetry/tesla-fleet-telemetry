@@ -300,7 +300,10 @@ brew install libsodium zmq
 
 ## Integration Tests
 
-To run the integration tests: `make integration`
+To run the integration tests locally: `make integration`
+
+In CI, the docker-compose integration suite is opt-in. The default push and pull request workflow runs package tests with `make test`, including the embedded NATS end-to-end specs, but does not run `make integration`. To run the integration job in GitHub Actions, trigger the "Build and Test" workflow manually or add the `run-integration-tests` label to a pull request.
+
 To log into errbit instances, default username is `noreply@example.org` and default password is `test123`
 
 ## Building the binary for Linux from Mac ARM64
