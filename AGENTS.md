@@ -267,18 +267,24 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   `BinarySerializer.Deserialize` skips the sender-ID/device-ID equality check whenever
   `DispatchRules` already has an entry for the message's `TxType`, so tests don't need to fuss over
   matching `SenderID` exactly as long as `dispatchRules[txType]` is populated.
-- **Known issue surfaced while building this harness, not fixed here (out of scope — keep NATS
-  test-harness PRs single-issue):** `datastore/nats/nats.go`'s `NatsConnect(...)` registers a
-  `nats.ClosedHandler` that unconditionally `panic()`s whenever the underlying `*nats.Conn`
-  transitions to the CLOSED state — including a clean, intentional `Producer.Close()` call, not
-  just an unrecoverable error. Reproduced directly: calling `producer.Close()` (or the wrapped
-  `nats.Conn.Close()` it delegates to) always panics, even with a nil `LastError()`.
-  `cmd/main.go`'s `startServer` calls `producer.Close()` on every dispatcher during graceful
-  server shutdown, so today that shutdown path panics instead of exiting cleanly — worth its own
-  follow-up issue. Because of this, the test harness never calls `Producer.Close()` on a real
-  `fleetnats.NewProducer`-constructed producer (only on bare `nats.Connect()`-created test
-  subscriber connections, which don't carry this handler) — reaching for it in a new test will
-  crash the whole `go test` binary for the package, not just fail an assertion.
+- **Fixed (was a known issue surfaced while building this harness):** `datastore/nats/nats.go`'s
+  `NatsConnect(...)` used to register a `nats.ClosedHandler` that unconditionally `panic()`s
+  whenever the underlying `*nats.Conn` transitions to the CLOSED state — including a clean,
+  intentional `Producer.Close()` call, not just an unrecoverable error. Reproduced directly:
+  calling `producer.Close()` (or the wrapped `nats.Conn.Close()` it delegates to) always panicked,
+  even with a nil `LastError()`. `cmd/main.go`'s `startServer` calls `producer.Close()` on every
+  dispatcher during graceful server shutdown, so that shutdown path used to panic instead of
+  exiting cleanly. Fixed by giving `Producer` an `*atomic.Bool` `closing` field, set by `Close()`
+  *before* it tears down `natsConn`; the `ClosedHandler` closure checks it and only panics when
+  it's unset — i.e. only for a genuinely unexpected, fatal close, not an intentional shutdown.
+  This works regardless of ordering (explicit `Close()` racing the async callback goroutine, or a
+  close initiated mid-reconnect) because the flag is written synchronously inside `Close()` before
+  the underlying `nats.Conn.Close()` call that eventually triggers the callback — see
+  `datastore/nats/nats_close_test.go`'s subprocess-isolated regression test (a panic inside
+  nats.go's async callback dispatcher goroutine can't be `recover()`-ed by the calling test and
+  would crash the whole `go test` binary, hence running the repro in a subprocess). The test
+  harness in this file can now safely call `Producer.Close()` on a real
+  `fleetnats.NewProducer`-constructed producer.
 - `hook.LastEntry()` (from `github.com/sirupsen/logrus/hooks/test`) is unreliable in these tests:
   the NATS client's own connection-state handlers (`nats_connected`, `nats_reconnected`,
   `nats_disconnected`, all registered in `nats.go`'s `NewProducer`) log asynchronously from a
