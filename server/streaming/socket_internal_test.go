@@ -25,6 +25,12 @@ func TestIsExpectedDisconnect(t *testing.T) {
 			errors.New("tls: failed to send closeNotify alert (but connection was closed anyway): write tcp 10.0.0.5:8443->10.0.0.2:17638: write: broken pipe"),
 			true,
 		},
+		{"ws close 1000 normal", &websocket.CloseError{Code: websocket.CloseNormalClosure}, true},
+		{"ws close 1001 going away", &websocket.CloseError{Code: websocket.CloseGoingAway}, true},
+		{"ws close 1005 no status", &websocket.CloseError{Code: websocket.CloseNoStatusReceived}, true},
+		{"ws close 1006 abnormal closure", &websocket.CloseError{Code: websocket.CloseAbnormalClosure}, true},
+		{"wrapped ws close 1006", fmt.Errorf("read: %w", &websocket.CloseError{Code: websocket.CloseAbnormalClosure}), true},
+		{"ws close 1011 internal error stays unexpected", &websocket.CloseError{Code: websocket.CloseInternalServerErr}, false},
 		{"unrelated error", errors.New("unexpected EOF"), false},
 	}
 

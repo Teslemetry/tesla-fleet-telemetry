@@ -170,6 +170,18 @@ func isExpectedDisconnect(err error) bool {
 	if errors.Is(err, websocket.ErrCloseSent) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
+	// Vehicles routinely drop the socket without a proper close handshake (lost
+	// signal, sleep, reboot), which gorilla surfaces as a *CloseError. Treat the
+	// benign teardown codes as expected; genuine protocol/server faults (e.g.
+	// 1011 internal error) still fall through to be recorded as errors.
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) {
+		switch closeErr.Code {
+		case websocket.CloseNormalClosure, websocket.CloseGoingAway,
+			websocket.CloseNoStatusReceived, websocket.CloseAbnormalClosure:
+			return true
+		}
+	}
 	// crypto/tls wraps the underlying write error with this exact message when
 	// the peer already closed the raw TCP connection before we could send our
 	// own closeNotify alert - functionally a normal close, not a fault.
