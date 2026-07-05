@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -81,7 +79,7 @@ func InitServer(c *config.Config, airbrakeHandler *airbrake.Handler, producerRul
 	mux.HandleFunc("/", socketServer.ServeBinaryWs(c))
 	mux.Handle("/status", socketServer.airbrakeHandler.WithReporting(http.HandlerFunc(socketServer.Status())))
 
-	server := &http.Server{Addr: fmt.Sprintf("%v:%v", c.Host, c.Port), Handler: serveHTTPWithLogs(mux, logger)}
+	server := &http.Server{Addr: fmt.Sprintf("%v:%v", c.Host, c.Port), Handler: mux}
 	go socketServer.handleAcks()
 	return server, socketServer, nil
 }
@@ -98,23 +96,6 @@ func (s *Server) handleAcks() {
 			}
 		}
 	}
-}
-
-// serveHTTPWithLogs wraps a handler and logs the request
-func serveHTTPWithLogs(h http.Handler, logger *logrus.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		urlPath := r.URL.Path
-		start := time.Now()
-		uuidStr := uuid.New().String()
-
-		requestLogInfo := logrus.LogInfo{"uuid": uuidStr, "method": r.Method, "urlPath": urlPath, "remote_ip": r.RemoteAddr}
-		logger.ActivityLog("request_start", requestLogInfo)
-
-		h.ServeHTTP(w, r)
-
-		requestLogInfo["duration_ms"] = int(time.Since(start).Milliseconds())
-		logger.ActivityLog("request_end", requestLogInfo)
-	})
 }
 
 // Status API shows server with mtls config is up

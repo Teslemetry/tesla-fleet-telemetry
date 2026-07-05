@@ -181,13 +181,21 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   after starting the `websocket_connection` span, before spawning the writer goroutine, so every
   log for that connection's lifetime correlates) rather than threading `context.Context` through
   every log call site.
-- `isExpectedDisconnect` in `server/streaming/socket.go` downgrades known-benign
+- `isExpectedDisconnect` in `server/streaming/socket.go` classifies known-benign
   connection-teardown errors (`websocket.ErrCloseSent`, `net.ErrClosed`, and the
-  `crypto/tls` "failed to send closeNotify alert (but connection was closed anyway)" message) from
-  `ErrorLog` to `ActivityLog`. These accounted for ~99.8% of this service's ERROR-level logs in a
-  ClickStack sample (`socket_err` / `websocket_close_err`) and are normal vehicle disconnects, not
-  faults — extend this allowlist rather than reverting to blanket `ErrorLog` if new benign
-  teardown error strings show up.
+  `crypto/tls` "failed to send closeNotify alert (but connection was closed anyway)" message).
+  Extend this allowlist rather than reverting to blanket `ErrorLog` if new benign teardown error
+  strings show up.
+- Teardown logging is deduplicated onto the single `socket_disconnected` line rather than emitted
+  separately per source: `sm.recordCloseReason(err)` (mutex-guarded, first-error-wins, since the
+  read loop, the writer goroutine, and `Close()`'s own `sm.Ws.Close()` can each observe a teardown
+  error) records the teardown error string, and `Close()` attaches it as
+  `close_reason` on `socket_disconnected` instead of also logging a standalone `socket_err` /
+  `websocket_close_err` line for the expected case. Genuinely unexpected errors still get their own
+  `ErrorLog` (`socket_err` / `websocket_close_err`) in addition to feeding `close_reason` — this
+  cut ~55-63% of the service's total log volume (`request_start`/`request_end` were also deleted
+  as redundant with `socket_disconnected`'s `duration_sec`/`RecordsStats`). `RecordsStatsToLogInfo`
+  emits int values (not `strconv.Itoa` strings) so ClickHouse can aggregate them without casts.
 - The same `isExpectedDisconnect` classifier gates span hygiene in `ProcessTelemetry`'s read-error
   path: an expected disconnect gets a `disconnect` span event (with the close reason as an
   attribute) and no error status; anything else calls `span.RecordError(err)` and
