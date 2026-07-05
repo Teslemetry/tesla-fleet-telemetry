@@ -156,7 +156,7 @@ explicitly in PR descriptions so a human can judge the tradeoff.
 ## OpenTelemetry instrumentation conventions
 
 - All spans/tracers use the single instrumentation scope name `"fleet-telemetry"` (see
-  `otelapi.Tracer("fleet-telemetry")` in `server/streaming/socket.go` and `datastore/nats/nats.go`).
+  `otelapi.Tracer("fleet-telemetry")` in `datastore/nats/nats.go`).
   Reuse that name for new instrumentation rather than introducing per-package scope names.
 - Tracing and the global `TextMapPropagator` (W3C `traceparent`/`tracestate` +
   baggage) are both configured once in `telemetry/tracing.NewProvider` (gated by
@@ -166,39 +166,31 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   on, or a safe no-op when it's off — no need to thread config through each dispatcher.
 - The NATS producer (`datastore/nats/nats.go`) creates a PRODUCER span per publish and injects
   trace context into NATS message headers via `nats.Msg.Header` (a `natsHeaderCarrier` adapts it
-  to `propagation.TextMapCarrier`). It intentionally does NOT parent these spans under the
-  connection's chunk spans (see the connection-span model below) — each publish is its own short
-  root trace so consumers (api/cache/webhook) still join a real trace without inflating a
-  connection-level span's descendant count. The header/propagation behavior is covered both by
+  to `propagation.TextMapCarrier`). Each publish is its own short root trace so consumers
+  (api/cache/webhook) still join a real trace; there is deliberately no connection-level span for
+  them to parent under (see below). The header/propagation behavior is covered both by
   pure-function unit tests (`datastore/nats/nats_test.go`) and by the embedded-server
   end-to-end harness (`datastore/nats/nats_e2e_test.go`).
-- Connection spans are **chunked**, not one span per session (`server/streaming/socket.go`
-  `ProcessTelemetry`). A vehicle can hold a websocket open for many hours (p99 ~8.76h); a single
-  span per connection right-censored every "currently connected" trace query, silently truncated
-  ~13.8% of sessions at the OTel default 128-event span limit, and lost the whole session on any
-  restart. Instead each connection emits: (a) one short `websocket.connect` span at accept, (b) a
-  rolling `websocket.chunk` span that `rotateChunkIfNeeded` ends+restarts every `chunkMaxDuration`
-  (30m) **or** `chunkMaxEvents` (100) — whichever comes first, giving each chunk a fresh 128-event
-  budget — carrying the `message_received`/`rate_limit_exceeded`/`disconnect` events, and (c) one
-  short `websocket.disconnect` span in `Close()` with `duration_sec`, `close_reason`, and total
-  bytes. All three are independent `SpanKindServer` roots (never a shared parent — that would
-  reintroduce the sampling blast-radius the design rejected); correlate them by the shared
-  `connection.socket_id` (= `sm.UUID`) / `vehicle.vin` attributes, not span links. Rotation is
-  time/count-gated bookkeeping (one int compare + one `time.Since`) so the per-message hot path
-  stays cheap — do not add per-message allocation there. Chunk state fields (`chunkSpan`,
-  `chunkStart`, `chunkEvents`, `chunkIndex`) are mutated only by the read-loop goroutine (and its
-  deferred teardown, same goroutine), so they need no locking.
+- There is intentionally **no per-connection span** (`server/streaming/socket.go`
+  `ProcessTelemetry`). An earlier `websocket_connection` span wrapped the whole session, but a
+  vehicle can hold a websocket open for many hours (p99 ~8.76h): a single span per connection
+  right-censored every "currently connected" trace query, silently truncated ~13.8% of sessions at
+  the OTel default 128-event span limit, and lost the whole session on any restart. Chunking it
+  (one short connect span + a rolling event-budgeted chunk span + a disconnect span) was designed
+  and prototyped (see the long-spans-judge-k4 design) but ultimately rejected as not worth the
+  machinery: rate limiting isn't enabled, and connection lifecycle / message-count debugging is
+  already served by the `socket_disconnected` log (`close_reason`, `duration_sec`, `RecordsStats`)
+  and the `num_connected_sockets` metric, while the per-publish producer spans above own the data
+  path. Do not reintroduce a connection-lifetime span; if session-level tracing is ever needed,
+  revisit the judge design rather than adding one span per socket.
 - Log/trace correlation: `logger.Logger.WithContext(ctx)` (in `logger/logger.go`) returns a
   logger scoped to `ctx` — this makes the OTel log hook (`logger/otel_hook.go`) pass `ctx` to
   `otelLogger.Emit`, which is what lets the OTel SDK log bridge stamp `trace_id`/`span_id`
-  natively. It also adds `trace_id`/`span_id` as plain fields for non-OTel output. Because the
-  connection span is chunked, the logger is re-pointed at the **current** chunk span on every
-  rotation: `startChunk` stores `sm.logger.WithContext(chunkCtx)` into `sm.activeLogger` (an
-  `atomic.Pointer[logrus.Logger]`), and all connection-lifetime log call sites go through
-  `sm.log()` (atomic load, falls back to the base logger before any chunk starts / in unit tests).
-  The atomic is required because the writer and ack goroutines read `sm.log()` concurrently with
-  the read loop's rotation — do not revert to reassigning `sm.logger`, which would race under
-  `-race`. Never let logs point at the ended `websocket.connect` span or a stale chunk.
+  natively, and also adds them as plain fields for non-OTel output. Use it wherever a log line is
+  emitted inside an active span so it correlates to that span. Connection-lifecycle logs
+  (`socket_connected` / `socket_disconnected`) are intentionally **not** span-correlated — there is
+  no connection span to scope them to (see above); they carry `close_reason` / `RecordsStats` for
+  debugging instead.
 - `isExpectedDisconnect` in `server/streaming/socket.go` classifies known-benign
   connection-teardown errors (`websocket.ErrCloseSent`, `net.ErrClosed`, and the
   `crypto/tls` "failed to send closeNotify alert (but connection was closed anyway)" message).
@@ -214,27 +206,29 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   cut ~55-63% of the service's total log volume (`request_start`/`request_end` were also deleted
   as redundant with `socket_disconnected`'s `duration_sec`/`RecordsStats`). `RecordsStatsToLogInfo`
   emits int values (not `strconv.Itoa` strings) so ClickHouse can aggregate them without casts.
-- The same `isExpectedDisconnect` classifier gates span hygiene in `ProcessTelemetry`'s read-error
-  path, now applied to the **current chunk span**: an expected disconnect gets a `disconnect` span
-  event (with the close reason as an attribute) and no error status; anything else calls
-  `sm.chunkSpan.RecordError(err)` and `sm.chunkSpan.SetStatus(codes.Error, "read failure")` (guarded
-  by a `sm.chunkSpan != nil` nil-check). Before this, every read error — expected or not — called
-  `span.RecordError`, producing ~31.8k `exception` events/day that were ~100% benign teardown noise
-  while `StatusCode` stayed `Unset` on all spans. Keep the log-side and span-side classification
-  using the same function so the two stay consistent as the allowlist grows.
+- Removing the connection span also dissolved the read-error span-hygiene problem it created:
+  every read error — expected teardown or not — used to call `span.RecordError`, producing ~31.8k
+  `exception` events/day that were ~100% benign teardown noise while `StatusCode` stayed `Unset`.
+  With no connection span, `ProcessTelemetry`'s read-error path just records the first teardown
+  error via `recordCloseReason`, so it surfaces as `close_reason` on `socket_disconnected` instead
+  of a span exception. `isExpectedDisconnect` still gates the log side (writer / `Close`), so keep
+  extending that one allowlist as new benign teardown strings appear.
 - Graceful drain on SIGTERM/SIGINT (`cmd/main.go`): `signal.NotifyContext` cancels a context that
   `startServer` selects on alongside the serve error. On signal, `gracefulShutdown` calls
   `server.Shutdown` (stops accepting; hijacked websockets are **not** tracked by net/http so this
   returns fast), then `registry.CloseAllSockets()` — which snapshots the sockets under the read lock
   and calls `sm.RequestClose()` on each outside the lock (closing the ws unblocks that socket's read
-  loop into its normal deferred teardown, so chunk/disconnect spans End and `socket_disconnected`
-  logs). `waitForSocketsDrain` polls `NumConnectedSockets()` until 0 or `shutdownDrainTimeout` (25s).
-  `RequestClose` records `errServerShutdown` (`"server_shutdown"`) as the first close reason so the
-  drain shows up as `close_reason` on `socket_disconnected`. A signal-driven shutdown returns nil
-  from `startServer` (main returns normally, deferred `shutdownFuncs`/`provider.Shutdown()` flush the
-  batched spans); only genuine serve faults `panic` so airbrake's `NotifyOnPanic` still fires. Do
-  not restore the old unconditional `panic(startServer(...))` — that dropped every open span on any
-  real termination and never ran the shutdown funcs.
+  loop into its normal deferred teardown, dispatching in-flight records and logging
+  `socket_disconnected`). `waitForSocketsDrain` polls `NumConnectedSockets()` until 0 or
+  `shutdownDrainTimeout` (25s). `RequestClose` records `errServerShutdown` (`"server_shutdown"`) as
+  the first close reason so the drain shows up as `close_reason` on `socket_disconnected`. On signal,
+  `startServer` also calls the `signal.NotifyContext` stop function so a second SIGTERM/SIGINT during
+  the drain hard-exits instead of being swallowed. A signal-driven shutdown returns nil from
+  `startServer` (main returns normally, deferred `shutdownFuncs`/`provider.Shutdown()` flush any
+  batched publish spans); only genuine serve faults `panic` so airbrake's `NotifyOnPanic` still
+  fires. Do not restore the old unconditional `panic(startServer(...))` — that skipped the drain and
+  the deferred shutdown funcs on any real termination, dropping in-flight telemetry and buffered
+  spans.
 - VIN-spoof observability: `telemetry.Record.applyProtoRecordTransforms` always overwrites a
   payload's claimed `Vin` with the connection-authenticated `record.Vin` (the `V`, `alerts`,
   `errors`, and `connectivity` arms all do `message.Vin = record.Vin`) — this is a silent
