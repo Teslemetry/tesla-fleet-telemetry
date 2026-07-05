@@ -259,8 +259,8 @@ Fleet Telemetry can publish errors to [airbrake](https://www.airbrake.io/error-m
 
 # Testing
 
-## Unit Tests
-To run the unit tests: `make test`
+## Package Tests
+To run the package tests: `make test`. This excludes the docker-compose tests under `test/integration`, but includes package-level end-to-end specs such as the embedded NATS harness in `datastore/nats/nats_e2e_test.go`.
 
 Common Errors:
 
