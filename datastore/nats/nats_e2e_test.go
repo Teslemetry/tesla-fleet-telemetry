@@ -358,6 +358,9 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 			subject := fmt.Sprintf("%s.%s.data", namespace, vin)
 			subscription, err := subConn.SubscribeSync(subject)
 			Expect(err).NotTo(HaveOccurred())
+			probeSubject := fmt.Sprintf("%s.%s.probe", namespace, vin)
+			probeSubscription, err := subConn.SubscribeSync(probeSubject)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(subConn.Flush()).NotTo(HaveOccurred())
 
 			// The restarted server below is a brand-new *server.Server with no
@@ -445,18 +448,16 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 
 			// Confirm subConn's subscription is actually registered on the new
 			// server - not merely that its TCP/protocol handshake finished -
-			// via a real round trip: publish a probe on a throwaway connection
-			// and wait for subConn to receive it. Nothing else can be
-			// publishing to this subject yet (the producer is still parked),
-			// so any message subConn receives here is unambiguously the probe.
+			// via a real round trip on a separate probe subject: publish a
+			// probe on a throwaway connection and wait for subConn to receive it.
 			probeConn, err := natsclient.Connect(url)
 			Expect(err).NotTo(HaveOccurred())
 			defer probeConn.Close()
 			Eventually(func() error {
-				if err := probeConn.Publish(subject, []byte("__probe__")); err != nil {
+				if err := probeConn.Publish(probeSubject, []byte("__probe__")); err != nil {
 					return err
 				}
-				probeMsg, err := subscription.NextMsg(200 * time.Millisecond)
+				probeMsg, err := probeSubscription.NextMsg(200 * time.Millisecond)
 				if err != nil {
 					return err
 				}
