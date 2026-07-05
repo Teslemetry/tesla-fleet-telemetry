@@ -85,9 +85,9 @@ func NewProvider(cfg *otel.Config, logger *logrus.Logger) (*Provider, error) {
 	}
 
 	// Create tracer provider with batch span processor and ratio-based sampler.
-	// ParentBased so a sampled parent (e.g. a future upstream traceparent, or a
-	// chunked session span) always keeps its children even when the ratio would
-	// otherwise drop them; today's spans are all roots so this is a no-op for them.
+	// ParentBased so a sampled parent (e.g. a future upstream traceparent) always
+	// keeps its children even when the ratio would otherwise drop them; today's
+	// spans are all roots so this is a no-op for them.
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
 		sdktrace.WithBatcher(exporter),
