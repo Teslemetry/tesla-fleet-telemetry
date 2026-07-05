@@ -12,10 +12,10 @@ Tesla Fleet Telemetry is a Go server reference implementation for Tesla's teleme
 # Build binary (outputs to $GOPATH/bin/fleet-telemetry)
 make build
 
-# Run unit tests (excludes integration tests)
+# Run package tests (excludes test/integration; includes embedded NATS e2e)
 make test
 
-# Run unit tests with race detection
+# Run package tests with race detection
 make test-race
 
 # Run linters (golangci-lint)
@@ -93,7 +93,7 @@ Records are configured in config.json to route to specific dispatchers:
 
 Uses **Ginkgo v2** test framework with **Gomega** assertions. Tests use `Describe/Context/It` blocks.
 
-Integration tests require Docker and spin up Kafka, Kinesis (localstack), Google Pub/Sub emulator, MQTT, Errbit, and monitoring services.
+`make test` excludes the docker-compose tests under `test/integration`, but includes package-level end-to-end specs such as `datastore/nats/nats_e2e_test.go`, which runs an embedded NATS server in-process. `make integration` requires Docker and spins up Kafka, Kinesis (localstack), Google Pub/Sub emulator, MQTT, Errbit, and monitoring services.
 
 ## Post-Change Checks
 
@@ -102,7 +102,7 @@ Run these after every code change (mirrors the CI in `.github/workflows/build.ym
 ```bash
 make format           # Format code (must produce no diff)
 make linters          # Run golangci-lint
-make test             # Run unit tests
+make test             # Run package tests, including embedded NATS e2e
 ```
 
 ## Configuration
@@ -117,7 +117,7 @@ Key configuration fields:
 
 ## CI Notes
 
-The "Build and Test" workflow (`.github/workflows/build.yml`) runs as one job: proto-gen check, format check, `golangci-lint` (via `golangci-lint-action`, separate from the later `make linters` step), unit tests, then `make integration` (docker-compose based, no external secrets needed — all backends are local emulators/containers). A step failing aborts the rest of the job, so a red run can be masking failures in later steps.
+The "Build and Test" workflow (`.github/workflows/build.yml`) runs as one job: proto-gen check, format check, `golangci-lint` (via `golangci-lint-action`, separate from the later `make linters` step), package tests, then `make integration` (docker-compose based, no external secrets needed — all backends are local emulators/containers). A step failing aborts the rest of the job, so a red run can be masking failures in later steps.
 
 `cloud.google.com/go/pubsub` is deprecated in favor of `.../pubsub/v2`; the v1 usages are suppressed with `//nolint:staticcheck` at each import until someone does the v2 migration — don't blanket-disable staticcheck for this, keep the nolint scoped to the pubsub import lines.
 
@@ -169,10 +169,9 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   to `propagation.TextMapCarrier`). It intentionally does NOT parent these spans under the
   connection's chunk spans (see the connection-span model below) — each publish is its own short
   root trace so consumers (api/cache/webhook) still join a real trace without inflating a
-  connection-level span's descendant count. `datastore/nats` has no integration test harness (no
-  embedded/dockerized NATS server in this repo) — the header/propagation logic is covered by
-  pure-function unit tests instead (`datastore/nats/nats_test.go`); an end-to-end check needs a
-  real NATS server.
+  connection-level span's descendant count. The header/propagation behavior is covered both by
+  pure-function unit tests (`datastore/nats/nats_test.go`) and by the embedded-server
+  end-to-end harness (`datastore/nats/nats_e2e_test.go`).
 - Connection spans are **chunked**, not one span per session (`server/streaming/socket.go`
   `ProcessTelemetry`). A vehicle can hold a websocket open for many hours (p99 ~8.76h); a single
   span per connection right-censored every "currently connected" trace query, silently truncated
