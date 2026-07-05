@@ -78,12 +78,12 @@ func main() {
 	// A signal-driven graceful shutdown returns nil; only genuine server faults
 	// panic (so airbrake's NotifyOnPanic still fires for those). Either way the
 	// deferred shutdownFuncs run and flush the OTel provider.
-	if err := startServer(ctx, config, airbrakeNotifier, logger); err != nil {
+	if err := startServer(ctx, stop, config, airbrakeNotifier, logger); err != nil {
 		panic(err)
 	}
 }
 
-func startServer(ctx context.Context, config *config.Config, airbrakeNotifier *gobrake.Notifier, logger *logrus.Logger) (err error) {
+func startServer(ctx context.Context, stopSignal context.CancelFunc, config *config.Config, airbrakeNotifier *gobrake.Notifier, logger *logrus.Logger) (err error) {
 	logger.ActivityLog("starting_server", nil)
 	registry := streaming.NewSocketRegistry()
 
@@ -119,6 +119,7 @@ func startServer(ctx context.Context, config *config.Config, airbrakeNotifier *g
 		// The listener stopped on its own (bind failure, unexpected error). Surface
 		// it to the caller, which panics so airbrake is notified.
 	case <-ctx.Done():
+		stopSignal()
 		// SIGTERM/SIGINT: stop accepting new connections, then drain the open ones
 		// so each socket's ProcessTelemetry runs its normal span teardown.
 		err = gracefulShutdown(server, registry, logger)
