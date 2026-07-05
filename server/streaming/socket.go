@@ -357,7 +357,7 @@ func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySeria
 		}
 	}
 
-	// write the record out to kafka
+	// write the record out to the configured dispatcher
 	sm.ReportMetricBytesPerRecords(record.TxType, record.Length())
 	sm.processRecord(record)
 

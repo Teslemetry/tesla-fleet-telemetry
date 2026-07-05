@@ -43,7 +43,7 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
 ### Install steps
 1. Allocate and assign a [FQDN](https://en.wikipedia.org/wiki/Fully_qualified_domain_name). This will be used in the server and client (vehicle) configuration.
 
-2. Design a simple hosting architecture. We recommend: Firewall/Loadbalancer -> Fleet Telemetry -> Kafka.
+2. Design a simple hosting architecture. We recommend: Firewall/Loadbalancer -> Fleet Telemetry -> NATS.
 
 3. Ensure mTLS connections are terminated on the Fleet Telemetry service.
 
@@ -54,8 +54,8 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
   "port": int - port,
   "log_level": string - trace, debug, info, warn, error,
   "json_log_enable": bool,
-  "namespace": string - kafka topic prefix,
-  "reliable_ack": bool - for use with reliable datastores, recommend setting to true with kafka,
+  "namespace": string - NATS subject/logger topic prefix,
+  "reliable_ack": bool - for use with reliable datastores, recommend setting to true with nats,
   "transmit_decoded_records": bool - if true, transmit JSON to dispatchers instead of proto.
   "monitoring": {
     "prometheus_metrics_port": int,
@@ -71,15 +71,9 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
   "logger": {
     "verbose": bool - include data types in the logs. Only applicable for records of type 'V'
   },
-  "kafka": { // librdkafka kafka config, seen here: https://raw.githubusercontent.com/confluentinc/librdkafka/master/CONFIGURATION.md
-    "bootstrap.servers": "kafka:9092",
-    "queue.buffering.max.messages": 1000000
-  },
-  "kinesis": {
-    "max_retries": 3,
-    "streams": {
-      "V": "custom_stream_name"
-    }
+  "nats": {
+    "url": "nats://nats:4222",
+    "name": "fleet-telemetry"
   },
   "rate_limit": {
     "enabled": bool,
@@ -93,8 +87,7 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
         "logger"
     ],
     "V": [
-        "kinesis",
-        "kafka"
+        "nats"
     ]
   },
   "tls": {
@@ -149,24 +142,14 @@ spec:
 Vehicles must be running firmware version 2023.20.6 or later.  Some older model S/X are not supported.
 
 ## Personalized Backends/Dispatchers
-Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry servers. They can be of any type, from distributed message queues to  STDOUT logger.  Here is a list of the currently supported [dispatchers](./telemetry/producer.go#L10-L19)::
-* Kafka (preferred): Configure with the config.json file.  See implementation here: [config/config.go](./config/config.go)
-  * Topics will need to be created for \*prefix\*`_V`,\*prefix\*`_connectivity` and \*prefix\*`_alerts`. The default prefix is `tesla`
-* Kinesis: Configure with standard [AWS env variables and config files](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html). The default AWS credentials and config files are: `~/.aws/credentials` and `~/.aws/config`.
-  * By default, stream names will be \*configured namespace\*_\*topic_name\*  ex.: `tesla_V`, `tesla_alerts`, etc
-  * Configure stream names directly by setting the streams config `"kinesis": { "streams": { *topic_name*: stream_name } }`
-  * Override stream names with env variables: KINESIS_STREAM_\*uppercase topic\* ex.: `KINESIS_STREAM_V`
-* Google pubsub: Along with the required pubsub config (See ./test/integration/config.json for example), be sure to set the environment variable `GOOGLE_APPLICATION_CREDENTIALS`
-  * On startup, the server will attempt to create missing topics and panic on failure.
-* ZMQ: Configure with the config.json file.  See implementation here: [config/config.go](./config/config.go)
-* MQTT: Configure using the config.json file. See implementation in [config/config.go](./config/config.go)
-  * See detailed MQTT information in the [MQTT README](./datastore/mqtt/README.md)
+Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry servers. They can be of any type, from distributed message queues to  STDOUT logger.  Here is a list of the currently supported [dispatchers](./telemetry/producer.go#L12-L17):
+* NATS (preferred): Configure with the config.json file. See implementation here: [config/config.go](./config/config.go) and [datastore/nats](./datastore/nats).
 * Logger: This is a simple STDOUT logger that serializes the protos to json.
 
 >NOTE: To add a new dispatcher, please provide integration tests and updated documentation. To serialize dispatcher data as json instead of protobufs, add a config `transmit_decoded_records` and set value to `true` as shown [here](config/test_configs_test.go#L186)
 
 ## Reliable Acks
-Fleet Telemetry can send ack messages back to the vehicle. This is useful for applications that need to ensure the data was received and processed. To enable this feature, set `reliable_ack_sources` to one of configured dispatchers (`kafka`,`kinesis`,`pubsub`,`zmq`, `mqtt`) in the config file. Reliable acks can only be set to one dispatcher per recordType. See [here](./test/integration/config.json#L8) for sample config.
+Fleet Telemetry can send ack messages back to the vehicle. This is useful for applications that need to ensure the data was received and processed. To enable this feature, set `reliable_ack_sources` to one of configured dispatchers (`nats`) in the config file. Reliable acks can only be set to one dispatcher per recordType. See [here](./test/integration/config.json) for sample config.
 
 ## Detecting Vehicle Connectivity Changes
 On the vehicle, Fleet Telemetry client behave similarly to how the connectivity engine for vehicle commands. Therefore we can use Fleet Telemetry connectivity event to assume when a vehicle is online. Note that it is a proxy, but if configured properly Fleet Telemetry connectivity time should match vehicle connectivity state in 99%+. To enable connectivity events simply add the `connectivity` records in the list of events in [server_config.json](./examples/server_config.json) file:
@@ -174,7 +157,7 @@ On the vehicle, Fleet Telemetry client behave similarly to how the connectivity 
   ```
     "records": {
         "connectivity": [
-            "kafka"
+            "nats"
         ]
       }
   ```
@@ -246,47 +229,8 @@ Fleet Telemetry can publish errors to [airbrake](https://www.airbrake.io/error-m
 ## Unit Tests
 To run the unit tests: `make test`
 
-Common Errors:
-
-```
-~/fleet-telemetry➜ git:(main) ✗  make test
-go build github.com/confluentinc/confluent-kafka-go/v2/kafka:
-# pkg-config --cflags  -- rdkafka
-Package rdkafka was not found in the pkg-config search path.
-Perhaps you should add the directory containing `rdkafka.pc'
-to the PKG_CONFIG_PATH environment variable
-No package 'rdkafka' found
-pkg-config: exit status 1
-make: *** [install] Error 1
-```
-librdkafka is missing, on macOS install it via `brew install librdkafka pkg-config` or follow instructions here https://github.com/confluentinc/confluent-kafka-go#getting-started
-
-```
-~/fleet-telemetry➜ git:(main) ✗  make test
-go build github.com/confluentinc/confluent-kafka-go/v2/kafka:
-# pkg-config --cflags  -- rdkafka
-Package libcrypto was not found in the pkg-config search path.
-Perhaps you should add the directory containing `libcrypto.pc'
-to the PKG_CONFIG_PATH environment variable
-Package 'libcrypto', required by 'rdkafka', not found
-pkg-config: exit status 1
-make: *** [install] Error 1
-
-~/fleet-telemetry➜ git:(main) ✗  locate libcrypto.pc
-/opt/homebrew/Cellar/openssl@3/3.0.8/lib/pkgconfig/libcrypto.pc
-
-~/fleet-telemetry➜ git:(main) ✗  export PKG_CONFIG_PATH=$PKG_CONFIG_PATH:/opt/homebrew/Cellar/openssl@3/3.0.8/lib/pkgconfig/
-```
-A reference to libcrypto is not set properly. To resolve find the reference to libcrypto by pkgconfig and set et the PKG_CONFIG_PATH accordingly.
-
-libzmq is missing. Install with:
-```sh
-sudo apt install -y libsodium-dev libzmq3-dev
-```
-Or for macOS:
-```sh
-brew install libsodium zmq
-```
+This fork's dispatcher set (NATS + the STDOUT logger) is pure Go, so no cgo or OS-level
+libraries (librdkafka, libzmq) are required to build or test.
 
 ## Integration Tests
 

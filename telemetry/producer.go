@@ -10,18 +10,8 @@ import (
 type Dispatcher string
 
 const (
-	// Pubsub registers a Google pubsub dispatcher
-	Pubsub Dispatcher = "pubsub"
-	// Kafka registers a kafka dispatcher
-	Kafka Dispatcher = "kafka"
-	// Kinesis registers a kinesis publisher
-	Kinesis Dispatcher = "kinesis"
 	// Logger registers a simple logger
 	Logger Dispatcher = "logger"
-	// ZMQ registers a zmq logger
-	ZMQ Dispatcher = "zmq"
-	// MQTT registers an MQTT dispatcher
-	MQTT Dispatcher = "mqtt"
 	// NATS registers a NATS dispatcher
 	NATS Dispatcher = "nats"
 )

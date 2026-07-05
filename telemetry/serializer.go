@@ -88,7 +88,7 @@ func (bs *BinarySerializer) Error(err error, record *Record) []byte {
 	return b
 }
 
-// Dispatch pushes the record to kafka for every rule associated to it
+// Dispatch pushes the record to each configured dispatcher for every rule associated to it
 func (bs *BinarySerializer) Dispatch(record *Record) {
 	for _, producer := range bs.DispatchRules[record.TxType] {
 		producer.Produce(record)

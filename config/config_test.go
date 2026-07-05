@@ -7,9 +7,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	githublogrus "github.com/sirupsen/logrus"
 
+	"github.com/teslamotors/fleet-telemetry/datastore/nats"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/metrics"
 	"github.com/teslamotors/fleet-telemetry/server/airbrake"
@@ -33,16 +33,14 @@ var _ = Describe("Test full application config", func() {
 			Namespace:  "tesla_telemetry",
 			TLS:        &TLS{CAFile: "tesla.ca", ServerCert: "your_own_cert.crt", ServerKey: "your_own_key.key"},
 			RateLimit:  &RateLimit{Enabled: true, MessageLimit: 1000, MessageInterval: 30},
-			Kafka: &confluent.ConfigMap{
-				"bootstrap.servers":        "some.broker:9093",
-				"ssl.ca.location":          "kafka.ca",
-				"ssl.certificate.location": "kafka.crt",
-				"ssl.key.location":         "kafka.key",
+			NATS: &nats.Config{
+				URL:  "nats://some.broker:4222",
+				Name: "fleet-telemetry",
 			},
 			Monitoring:    &metrics.MonitoringConfig{PrometheusMetricsPort: 9090, ProfilerPort: 4269, ProfilingPath: "/tmp/fleet-telemetry/profile/"},
 			LogLevel:      "info",
 			JSONLogEnable: true,
-			Records:       map[string][]telemetry.Dispatcher{"V": {"kafka"}},
+			Records:       map[string][]telemetry.Dispatcher{"V": {"nats"}},
 		}
 	})
 
@@ -128,18 +126,15 @@ var _ = Describe("Test full application config", func() {
 		})
 	})
 
-	Context("configure kafka", func() {
-		It("converts floats to int", func() {
-			config, err := loadTestApplicationConfig(TestSmallConfig)
-			Expect(err).NotTo(HaveOccurred())
+	Context("configure nats", func() {
+		It("returns an error if nats isn't included", func() {
+			config.Records = map[string][]telemetry.Dispatcher{"V": {"nats"}}
+			config.NATS = nil
 
-			_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(producers["V"]).To(HaveLen(1))
-
-			value, err := config.Kafka.Get("queue.buffering.max.messages", 10)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(value.(int)).To(Equal(1000000))
+			var err error
+			_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log)
+			Expect(err).To(MatchError("expected NATS to be configured"))
+			Expect(producers).To(BeNil())
 		})
 	})
 
@@ -173,11 +168,10 @@ var _ = Describe("Test full application config", func() {
 
 			reliableAcks, err := config.configureReliableAckSources()
 			Expect(err).ToNot(HaveOccurred())
-			Expect(reliableAcks["kafka"]).To(HaveLen(2))
-			Expect(reliableAcks["kafka"]["V"]).To(BeTrue())
-			Expect(reliableAcks["kafka"]["errors"]).To(BeTrue())
-			Expect(reliableAcks["mqtt"]).To(HaveLen(1))
-			Expect(reliableAcks["mqtt"]["alerts"]).To(BeTrue())
+			Expect(reliableAcks["nats"]).To(HaveLen(3))
+			Expect(reliableAcks["nats"]["V"]).To(BeTrue())
+			Expect(reliableAcks["nats"]["errors"]).To(BeTrue())
+			Expect(reliableAcks["nats"]["alerts"]).To(BeTrue())
 		})
 
 		DescribeTable("fails",
@@ -186,41 +180,16 @@ var _ = Describe("Test full application config", func() {
 				config, err := loadTestApplicationConfig(configInput)
 				Expect(err).NotTo(HaveOccurred())
 
-				_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
+				_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log)
 				Expect(err).To(MatchError(errMessage))
 				Expect(producers).To(BeNil())
 			},
-			Entry("when reliable ack is mapped incorrectly", TestBadReliableAckConfig, "pubsub cannot be configured as reliable ack for record: V. Valid datastores configured [kafka]"),
+			Entry("when reliable ack is mapped incorrectly", TestBadReliableAckConfig, "some_unconfigured_dispatcher cannot be configured as reliable ack for record: V. Valid datastores configured [nats]"),
 			Entry("when logger is configured as reliable ack", TestLoggerAsReliableAckConfig, "logger cannot be configured as reliable ack for record: V"),
-			Entry("when reliable ack is configured for unmapped txtype", TestUnusedTxTypeAsReliableAckConfig, "kafka cannot be configured as reliable ack for record: error since no record mapping exists"),
+			Entry("when reliable ack is configured for unmapped txtype", TestUnusedTxTypeAsReliableAckConfig, "nats cannot be configured as reliable ack for record: error since no record mapping exists"),
 			Entry("when reliable ack is mapped with unsupported txtype", TestBadTxTypeReliableAckConfig, "reliable ack not needed for txType: connectivity"),
 		)
 
-	})
-
-	Context("configure kinesis", func() {
-		It("returns an error if kinesis isn't included", func() {
-			log, _ := logrus.NoOpLogger()
-			config.Records = map[string][]telemetry.Dispatcher{"V": {"kinesis"}}
-
-			var err error
-			_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).To(MatchError("expected Kinesis to be configured"))
-			Expect(producers).To(BeNil())
-		})
-
-		It("returns a map", func() {
-			config.Kinesis = &Kinesis{Streams: map[string]string{"V": "mystream_V", "errors": "mystream_errors"}}
-			err := os.Setenv("KINESIS_STREAM_ERRORS", "test_errors")
-			Expect(err).NotTo(HaveOccurred())
-
-			streamMapping := config.CreateKinesisStreamMapping([]string{"V", "errors", "alerts"})
-			Expect(streamMapping).To(Equal(map[string]string{
-				"V":      "mystream_V",
-				"errors": "test_errors",
-				"alerts": "tesla_telemetry_alerts",
-			}))
-		})
 	})
 
 	Context("VinsToTrack", func() {
@@ -245,66 +214,6 @@ var _ = Describe("Test full application config", func() {
 			maxVinsToTrack = 2
 			_, err := loadTestApplicationConfig(BadVinsConfig)
 			Expect(err).To(MatchError("set the value of `vins_signal_tracking_enabled` less than 2 unique vins"))
-		})
-	})
-
-	Context("configure pubsub", func() {
-		var (
-			pubsubConfig *Config
-		)
-
-		BeforeEach(func() {
-			var err error
-			pubsubConfig, err = loadTestApplicationConfig(TestPubsubConfig)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("pubsub does not work when both the environment variables are set", func() {
-			log, _ := logrus.NoOpLogger()
-			_ = os.Setenv("PUBSUB_EMULATOR_HOST", "some_url")
-			_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "some_service_account_path")
-			_, _, err := pubsubConfig.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).To(MatchError("pubsub_connect_error pubsub cannot initialize with both emulator and GCP resource"))
-		})
-
-		It("pubsub config works", func() {
-			log, _ := logrus.NoOpLogger()
-			_ = os.Setenv("PUBSUB_EMULATOR_HOST", "some_url")
-			var err error
-			_, producers, err = pubsubConfig.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(producers["V"]).NotTo(BeNil())
-		})
-	})
-
-	Context("configure zmq", func() {
-		var zmqConfig *Config
-
-		BeforeEach(func() {
-			var err error
-			zmqConfig, err = loadTestApplicationConfig(TestZMQConfig)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("returns an error if zmq isn't included", func() {
-			log, _ := logrus.NoOpLogger()
-			config.Records = map[string][]telemetry.Dispatcher{"V": {"zmq"}}
-			var err error
-			_, producers, err = config.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).To(MatchError("expected ZMQ to be configured"))
-			Expect(producers).To(BeNil())
-			_, producers, err = zmqConfig.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("zmq config works", func() {
-			// ZMQ close is async, this removes the need to sync between tests.
-			zmqConfig.ZMQ.Addr = "tcp://127.0.0.1:5285"
-			log, _ := logrus.NoOpLogger()
-			var err error
-			_, producers, err = zmqConfig.ConfigureProducers(airbrake.NewAirbrakeHandler(nil), log, true)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(producers["V"]).NotTo(BeNil())
 		})
 	})
 

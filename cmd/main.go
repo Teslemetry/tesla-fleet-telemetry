@@ -72,7 +72,7 @@ func startServer(config *config.Config, airbrakeNotifier *gobrake.Notifier, logg
 		monitoring.StartServerMetrics(config, logger, registry)
 	}
 
-	dispatchers, producerRules, err := config.ConfigureProducers(airbrakeHandler, logger, false)
+	dispatchers, producerRules, err := config.ConfigureProducers(airbrakeHandler, logger)
 	if err != nil {
 		return err
 	}

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Tesla Fleet Telemetry is a Go server reference implementation for Tesla's telemetry protocol. Vehicles connect via WebSocket with TLS client certificates, send Flatbuffers-encoded telemetry, and the server dispatches data to configurable backends (Kafka, Kinesis, Google Pub/Sub, MQTT, NATS, ZMQ, or logger).
+Tesla Fleet Telemetry is a Go server reference implementation for Tesla's telemetry protocol. Vehicles connect via WebSocket with TLS client certificates, send Flatbuffers-encoded telemetry, and the server dispatches data to configurable backends (NATS or the STDOUT logger — see the "Producer/dispatcher strip" note below for why the Kafka/Kinesis/Google Pub/Sub/MQTT/ZMQ dispatchers this fork used to support are gone).
 
 ## Build & Development Commands
 
@@ -49,11 +49,8 @@ go test -cover ./config
 
 ### System Dependencies (macOS)
 
-```bash
-brew install librdkafka pkg-config libsodium zmq
-```
-
-If you see libcrypto errors, set PKG_CONFIG_PATH to include your OpenSSL pkgconfig directory.
+None. The remaining dispatcher set (NATS + the STDOUT logger) is pure Go — no cgo, no
+librdkafka/libzmq, no `PKG_CONFIG_PATH` fiddling required to build or test.
 
 ## Architecture
 
@@ -69,7 +66,7 @@ Vehicles (WebSocket/TLS) → server/streaming → telemetry/record → datastore
 - **config/**: Central configuration handling for all dispatchers and server settings
 - **server/streaming/**: WebSocket server and per-vehicle connection handling (`socket.go` manages individual connections)
 - **telemetry/**: Core types - `Producer` interface, `Record` structure, serialization
-- **datastore/**: Dispatcher implementations (kafka/, kinesis/, googlepubsub/, mqtt/, nats/, zmq/, simple/)
+- **datastore/**: Dispatcher implementations (nats/, simple/)
 - **messages/**: Protocol definitions - Flatbuffers schemas, identity handling
 - **protos/**: Protocol Buffer definitions for vehicle data types
 - **metrics/**: Prometheus and StatsD metric adapters
@@ -93,7 +90,7 @@ Records are configured in config.json to route to specific dispatchers:
 
 Uses **Ginkgo v2** test framework with **Gomega** assertions. Tests use `Describe/Context/It` blocks.
 
-Integration tests require Docker and spin up Kafka, Kinesis (localstack), Google Pub/Sub emulator, MQTT, Errbit, and monitoring services.
+Integration tests require Docker and spin up Errbit and monitoring services (Prometheus, Grafana). There's no dockerized NATS server in this repo, so the integration suite only wires the `logger` dispatcher — it does not exercise `datastore/nats` end-to-end (see the "Producer/dispatcher strip" note below).
 
 ## Post-Change Checks
 
@@ -119,15 +116,25 @@ Key configuration fields:
 
 The "Build and Test" workflow (`.github/workflows/build.yml`) runs as one job: proto-gen check, format check, `golangci-lint` (via `golangci-lint-action`, separate from the later `make linters` step), unit tests, then `make integration` (docker-compose based, no external secrets needed — all backends are local emulators/containers). A step failing aborts the rest of the job, so a red run can be masking failures in later steps.
 
-`cloud.google.com/go/pubsub` is deprecated in favor of `.../pubsub/v2`; the v1 usages are suppressed with `//nolint:staticcheck` at each import until someone does the v2 migration — don't blanket-disable staticcheck for this, keep the nolint scoped to the pubsub import lines.
-
 `test/integration/Dockerfile`'s base image Go version must track `go.mod`'s `go` directive — the official `golang` images ship with `GOTOOLCHAIN=local`, so a mismatch fails `go mod download` outright instead of auto-fetching the right toolchain.
 
-`docker-compose.yml`'s `kinesis` service is pinned to `localstack/localstack:3.8`: newer `localstack/localstack` tags refuse to start at all without a paid `LOCALSTACK_AUTH_TOKEN`, even to serve community-tier services like Kinesis. Don't float this image back to `:latest`.
-
-`datastore/googlepubsub`'s `Producer.Produce` intentionally publishes **every** record type (V, connectivity, ...) to a single pubsub topic named after `namespace` (not `namespace_<recordtype>` like kafka/mqtt/zmq/kinesis) — see commit "Use custom topic". `test/integration` reflects this: it subscribes once to that shared topic and filters incoming messages by the `txtype` message attribute rather than using per-record-type topics.
-
 `test/integration/config.json`'s `monitoring` block sets `profiler_host`/`prometheus_metrics_host` to `0.0.0.0`. Production defaults these to `127.0.0.1` (see "Fix vehicle identity spoofing and bind monitoring servers to localhost") for security, but the integration test's HTTP checks run from a separate container on the compose network and need to reach `app:4269`/`app:9090`.
+
+### Producer/dispatcher strip (proof-of-concept)
+
+A branch stripped `datastore/{kafka,kinesis,googlepubsub,mqtt,zmq}` (and their Config fields,
+`config/config.go` wiring blocks, integration consumer tests, and docker-compose services) down
+to NATS + the STDOUT logger, to quantify dependency/build-burden cost against a prior coupling
+scout (`datastore/*` touched core code in exactly two places per dispatcher — a `Config` field and
+a wiring block in `config/config.go`, nothing else). Measured effect: go.sum ~369→~158 lines,
+`CGO_ENABLED=0` builds (previously hard-required cgo for `confluent-kafka-go` and `pebbe/zmq4`),
+docker-compose services 10→5, repo Go LOC down ~24%. That scout's own recommendation had been
+*against* a full purge — the dispatchers were already cleanly pluggable and cheap to keep, and the
+real cost was CI wall-clock (5 emulator containers), not merge conflicts or Go coupling — so treat
+this strip as a proof-of-concept data point for evaluation, not a settled architectural decision.
+If it's reverted, the coupling shape it documented should still hold; if it's kept, note that
+`datastore/nats` still has no integration harness (no dockerized NATS server in this repo), so the
+integration suite's dispatcher coverage is effectively zero either way.
 
 Local dev note: this sandbox environment's default `go` is 1.19, too old for this module (`go 1.24.0` in go.mod). Install a matching toolchain before running `make lint`/`make test` locally.
 
