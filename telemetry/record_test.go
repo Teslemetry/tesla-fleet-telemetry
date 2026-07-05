@@ -345,6 +345,51 @@ var _ = Describe("Socket handler test", func() {
 			Expect(output.GetVin()).NotTo(Equal(spoofedVin))
 		})
 
+		It("warns on a spoofed connectivity VIN, capped to once per connection", func() {
+			const certVin = "certVin"
+			const spoofedVin = "spoofedVin"
+
+			warnLogger, hook := logrus.NoOpLogger()
+			serializer = telemetry.NewBinarySerializer(
+				&telemetry.RequestIdentity{
+					DeviceID: certVin,
+					SenderID: fmt.Sprintf("vehicle_device.%s", certVin),
+				},
+				map[string][]telemetry.Producer{"D4": nil},
+				warnLogger,
+			)
+
+			buildMessage := func(txid string) []byte {
+				payloadBytes, err := proto.Marshal(&protos.VehicleConnectivity{Vin: spoofedVin})
+				Expect(err).NotTo(HaveOccurred())
+				message := messages.StreamMessage{
+					TXID:         []byte(txid),
+					DeviceID:     []byte(certVin),
+					SenderID:     []byte(fmt.Sprintf("vehicle_device.%s", certVin)),
+					MessageTopic: []byte("connectivity"),
+					Payload:      payloadBytes,
+				}
+				recordMsg, err := message.ToBytes()
+				Expect(err).NotTo(HaveOccurred())
+				return recordMsg
+			}
+
+			_, err := telemetry.NewRecord(serializer, buildMessage("1234"), "socket-1", true)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(hook.Entries).To(HaveLen(1))
+			Expect(hook.LastEntry().Message).To(Equal("unexpected_vin"))
+			Expect(hook.LastEntry().Data["claimed_vin"]).To(Equal(spoofedVin))
+			Expect(hook.LastEntry().Data["connection_vin"]).To(Equal(certVin))
+			Expect(hook.LastEntry().Data["socket_id"]).To(Equal("socket-1"))
+			Expect(hook.LastEntry().Data["txid"]).To(Equal("1234"))
+
+			// a second spoofed message on the same connection must not log again
+			_, err = telemetry.NewRecord(serializer, buildMessage("5678"), "socket-1", true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hook.Entries).To(HaveLen(1))
+		})
+
 		It("json payload returns valid data when transmitDecodedRecords is false", func() {
 			message := messages.StreamMessage{TXID: []byte("1234"), SenderID: []byte("vehicle_device.42"), MessageTopic: []byte("V"), Payload: generatePayload("cybertruck", "42", nil)}
 			recordMsg, err := message.ToBytes()

@@ -190,6 +190,7 @@ func (record *Record) applyProtoRecordTransforms() error {
 		if err != nil {
 			return err
 		}
+		record.logVinMismatch(message.GetVin())
 		message.Vin = record.Vin
 		record.PayloadBytes, err = proto.Marshal(message)
 		record.protoMessage = message
@@ -197,6 +198,28 @@ func (record *Record) applyProtoRecordTransforms() error {
 	default:
 		return nil
 	}
+}
+
+// logVinMismatch warns when a vehicle claims a VIN in its payload that differs from the
+// connection-authenticated VIN (record.Vin). The claimed VIN is always overwritten by the caller
+// regardless of this log firing - this only gives visibility into how often spoofed VINs occur, as
+// input to a future decision on whether to drop such messages instead of correcting them. Capped to
+// the first occurrence per connection (see BinarySerializer.ShouldLogVinMismatch) so a misbehaving
+// or malicious client resending a bad VIN can't flood the logs.
+func (record *Record) logVinMismatch(claimedVin string) {
+	if claimedVin == "" || claimedVin == record.Vin || record.Serializer == nil {
+		return
+	}
+	if !record.Serializer.ShouldLogVinMismatch() {
+		return
+	}
+	record.Serializer.Logger().Log(logrus.WARN, "unexpected_vin", logrus.LogInfo{
+		"socket_id":      record.SocketID,
+		"txid":           record.Txid,
+		"record_type":    record.TxType,
+		"claimed_vin":    claimedVin,
+		"connection_vin": record.Vin,
+	})
 }
 
 func (record *Record) applyRecordTransforms() error {
