@@ -98,12 +98,6 @@ type SocketMessage struct {
 	Msg     []byte
 }
 
-type socketReadResult struct {
-	msgType int
-	message []byte
-	err     error
-}
-
 // Metrics stores metrics reported from this package
 type Metrics struct {
 	rateLimitExceededCount       adapter.Counter
@@ -273,6 +267,11 @@ func (sm *SocketManager) endChunk() {
 // rotateChunkIfNeeded rotates the chunk span once it exceeds the time or event
 // budget. This is time/count-gated bookkeeping (one int compare + one time.Since)
 // so it stays cheap on the per-message hot path.
+// Duration rotation is evaluated at message boundaries: gorilla/websocket
+// permanently poisons a connection after a read-deadline timeout, and a per-conn
+// timer goroutine is too costly at fleet scale. Idle chunks accrue almost no
+// span events, graceful drain ends open chunks on deploy/restart, and only hard
+// process loss drops an idle chunk.
 func (sm *SocketManager) rotateChunkIfNeeded() {
 	if sm.chunkEvents < chunkMaxEvents && time.Since(sm.chunkStart) < chunkMaxDuration {
 		return
@@ -290,25 +289,6 @@ func (sm *SocketManager) addChunkEvent(name string, opts ...trace.EventOption) {
 	}
 	sm.chunkSpan.AddEvent(name, opts...)
 	sm.chunkEvents++
-}
-
-func (sm *SocketManager) chunkRotationDelay() time.Duration {
-	remaining := time.Until(sm.chunkStart.Add(chunkMaxDuration))
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
-func (sm *SocketManager) readMessages(reads chan<- socketReadResult) {
-	defer close(reads)
-	for {
-		msgType, message, err := sm.Ws.ReadMessage()
-		reads <- socketReadResult{msgType: msgType, message: message, err: err}
-		if err != nil || msgType != sm.MsgType {
-			return
-		}
-	}
 }
 
 // RequestClose unblocks the read loop so ProcessTelemetry's normal teardown runs
@@ -402,8 +382,6 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 
 	sm.log().ActivityLog("socket_connected", sm.requestInfo)
 	go sm.writer()
-	reads := make(chan socketReadResult, 1)
-	go sm.readMessages(reads)
 	var rl *rate.RateLimiter
 
 	if sm.config.RateLimit == nil {
@@ -417,40 +395,10 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 
 	var rateLimitStartTime time.Time
 	messagesRateLimited := 0
-	chunkTimer := time.NewTimer(time.Hour)
-	if !chunkTimer.Stop() {
-		<-chunkTimer.C
-	}
-	defer chunkTimer.Stop()
 
 	// infinite loop until the client disconnects (keep accepting new messages)
 	for {
-		delay := sm.chunkRotationDelay()
-		if delay <= 0 {
-			sm.rotateChunkIfNeeded()
-			continue
-		}
-		chunkTimer.Reset(delay)
-
-		var read socketReadResult
-		select {
-		case readResult, ok := <-reads:
-			if !ok {
-				return
-			}
-			read = readResult
-			if !chunkTimer.Stop() {
-				select {
-				case <-chunkTimer.C:
-				default:
-				}
-			}
-		case <-chunkTimer.C:
-			sm.rotateChunkIfNeeded()
-			continue
-		}
-
-		msgType, message, err := read.msgType, read.message, read.err
+		msgType, message, err := sm.Ws.ReadMessage()
 		if err != nil || msgType != sm.MsgType {
 			if err != nil {
 				sm.recordCloseReason(err)
