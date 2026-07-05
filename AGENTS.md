@@ -298,3 +298,28 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   (Ginkgo runs sibling leaf specs within the same container in declaration order by default) —
   don't add a new tracer-configuring spec earlier in `datastore/nats`'s test files without
   accounting for this.
+- **The "buffers publishes across a brief server outage" spec (`reconnect and publish-error
+  behavior`) is not testing reconnect *speed* — it's racing against core NATS's lack of
+  durability, and was fixed to remove that race rather than to pad a timeout.** The restarted
+  server in this spec is a brand-new `*server.Server` with no memory of prior subscribers; core
+  NATS (no JetStream) only routes a publish to subscribers already registered on the broker at
+  the moment it's processed. With two independent client connections (the subscriber and the
+  producer) both reconnecting to that fresh server on their own schedules, whichever wins the
+  race decides the outcome — if the producer's buffered publish reaches the server before the
+  subscriber has resubscribed, it is delivered to no one and silently dropped. This is normal
+  at-most-once pub/sub behavior, not a client bug, and it's *inherently* CI-timing-sensitive: a
+  differently-scheduled runner can flip which side wins even though both sides "eventually"
+  reconnect well within any reasonable timeout. Confirmed by instrumenting both connections'
+  reconnect order in a standalone repro: delivery failed in every run where the producer
+  reconnected before the subscriber, regardless of how much overall time was allowed.
+  The fix removes the race instead of betting a bigger timeout will keep resolving it in the
+  subscriber's favor: give the producer's connection an effectively-infinite `ReconnectWait`
+  (parking it in `RECONNECTING`, capturing the `*nats.Conn` via the `fleetnats.NatsConnect` seam),
+  confirm the subscriber's subscription is *actually registered* on the restarted server via a
+  real round-trip probe message (not just that its TCP handshake finished), and only then call
+  `producerConn.ForceReconnect()` — `nats.go`'s `doReconnect` always runs
+  `resendSubscriptions()` before `flushReconnectPendingItems()`, so forcing the producer's
+  reconnect after the subscriber is provably ready guarantees the buffered message can't be
+  flushed into a not-yet-subscribed subject. If this spec (or a similar buffer-across-outage
+  test) starts flaking again, suspect this same race before reaching for a bigger `Eventually`
+  window — a bigger window doesn't fix an ordering race, it just makes it rarer.
