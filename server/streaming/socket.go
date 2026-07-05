@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/teslamotors/fleet-telemetry/telemetry"
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -53,6 +53,9 @@ type SocketManager struct {
 	writeChan              chan SocketMessage
 	transmitDecodedRecords bool
 	vinsSignalTracking     map[string]struct{}
+
+	closeReasonMu sync.Mutex
+	closeReason   string
 }
 
 // SocketMessage represents incoming socket connection
@@ -173,30 +176,48 @@ func isExpectedDisconnect(err error) bool {
 	return strings.Contains(err.Error(), "failed to send closeNotify alert (but connection was closed anyway)")
 }
 
+// recordCloseReason stores the first teardown error seen across the
+// reader/writer goroutines, so socket_disconnected can report a single close_reason
+// regardless of which side (read, write, or ws.Close itself) observed it first.
+func (sm *SocketManager) recordCloseReason(err error) {
+	if err == nil {
+		return
+	}
+	sm.closeReasonMu.Lock()
+	defer sm.closeReasonMu.Unlock()
+	if sm.closeReason == "" {
+		sm.closeReason = err.Error()
+	}
+}
+
 // Close shuts down a socket connection for a single client and log metrics
 func (sm *SocketManager) Close() {
 	if err := sm.Ws.Close(); err != nil {
-		if isExpectedDisconnect(err) {
-			sm.logger.ActivityLog("websocket_close_err", logrus.LogInfo{"error": err.Error()})
-		} else {
+		sm.recordCloseReason(err)
+		if !isExpectedDisconnect(err) {
 			sm.logger.ErrorLog("websocket_close_err", err, nil)
 		}
 	}
 
 	socketMetrics := sm.RecordsStatsToLogInfo()
 	socketMetrics["duration_sec"] = int(time.Since(sm.StartTime) / time.Second) // Result is in nanosecond, converting it to seconds
+	sm.closeReasonMu.Lock()
+	if sm.closeReason != "" {
+		socketMetrics["close_reason"] = sm.closeReason
+	}
+	sm.closeReasonMu.Unlock()
 	sm.logger.ActivityLog("socket_disconnected", socketMetrics)
 }
 
-// RecordsStatsToLogInfo formats the stats map into a string
+// RecordsStatsToLogInfo converts the stats map into a loggable map, keeping values int-typed
 func (sm *SocketManager) RecordsStatsToLogInfo() map[string]interface{} {
 	total := 0
 	logInfo := make(map[string]interface{})
 	for key, value := range sm.RecordsStats {
-		logInfo[key] = strconv.Itoa(value)
+		logInfo[key] = value
 		total += value
 	}
-	logInfo["total"] = strconv.Itoa(total)
+	logInfo["total"] = total
 	return logInfo
 }
 
@@ -244,7 +265,15 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 		msgType, message, err := sm.Ws.ReadMessage()
 		if err != nil || msgType != sm.MsgType {
 			if err != nil {
-				span.RecordError(err)
+				sm.recordCloseReason(err)
+				if isExpectedDisconnect(err) {
+					span.AddEvent("disconnect", trace.WithAttributes(
+						attribute.String("disconnect.reason", err.Error()),
+					))
+				} else {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, "read failure")
+				}
 			}
 			return
 		}
@@ -385,9 +414,8 @@ func (sm *SocketManager) writer() {
 			err := sm.writeMessage(msg.MsgType, msg.Msg)
 			if err != nil {
 				metricsRegistry.socketErrorCount.Inc(map[string]string{})
-				if isExpectedDisconnect(err) {
-					sm.logger.ActivityLog("socket_err", logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID, "error": err.Error()})
-				} else {
+				sm.recordCloseReason(err)
+				if !isExpectedDisconnect(err) {
 					sm.logger.ErrorLog("socket_err", err, logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID})
 				}
 				return
@@ -402,7 +430,7 @@ func (sm *SocketManager) writeMessage(msgType int, msg []byte) error {
 }
 
 // ReportMetricBytesPerRecords records metrics for metric size
-func (sm SocketManager) ReportMetricBytesPerRecords(recordType string, byteSize int) {
+func (sm *SocketManager) ReportMetricBytesPerRecords(recordType string, byteSize int) {
 	sm.RecordsStats[recordType] += byteSize
 
 	metricsRegistry.recordSizeBytesTotal.Add(int64(byteSize), map[string]string{"record_type": recordType})

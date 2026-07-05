@@ -181,13 +181,28 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   after starting the `websocket_connection` span, before spawning the writer goroutine, so every
   log for that connection's lifetime correlates) rather than threading `context.Context` through
   every log call site.
-- `isExpectedDisconnect` in `server/streaming/socket.go` downgrades known-benign
+- `isExpectedDisconnect` in `server/streaming/socket.go` classifies known-benign
   connection-teardown errors (`websocket.ErrCloseSent`, `net.ErrClosed`, and the
-  `crypto/tls` "failed to send closeNotify alert (but connection was closed anyway)" message) from
-  `ErrorLog` to `ActivityLog`. These accounted for ~99.8% of this service's ERROR-level logs in a
-  ClickStack sample (`socket_err` / `websocket_close_err`) and are normal vehicle disconnects, not
-  faults — extend this allowlist rather than reverting to blanket `ErrorLog` if new benign
-  teardown error strings show up.
+  `crypto/tls` "failed to send closeNotify alert (but connection was closed anyway)" message).
+  Extend this allowlist rather than reverting to blanket `ErrorLog` if new benign teardown error
+  strings show up.
+- Teardown logging is deduplicated onto the single `socket_disconnected` line rather than emitted
+  separately per source: `sm.recordCloseReason(err)` (mutex-guarded, first-error-wins, since the
+  read loop, the writer goroutine, and `Close()`'s own `sm.Ws.Close()` can each observe a teardown
+  error) records the teardown error string, and `Close()` attaches it as
+  `close_reason` on `socket_disconnected` instead of also logging a standalone `socket_err` /
+  `websocket_close_err` line for the expected case. Genuinely unexpected errors still get their own
+  `ErrorLog` (`socket_err` / `websocket_close_err`) in addition to feeding `close_reason` — this
+  cut ~55-63% of the service's total log volume (`request_start`/`request_end` were also deleted
+  as redundant with `socket_disconnected`'s `duration_sec`/`RecordsStats`). `RecordsStatsToLogInfo`
+  emits int values (not `strconv.Itoa` strings) so ClickHouse can aggregate them without casts.
+- The same `isExpectedDisconnect` classifier gates span hygiene in `ProcessTelemetry`'s read-error
+  path: an expected disconnect gets a `disconnect` span event (with the close reason as an
+  attribute) and no error status; anything else calls `span.RecordError(err)` and
+  `span.SetStatus(codes.Error, "read failure")`. Before this, every read error — expected or not —
+  called `span.RecordError`, producing ~31.8k `exception` events/day that were ~100% benign
+  teardown noise while `StatusCode` stayed `Unset` on all spans. Keep the log-side and span-side
+  classification using the same function so the two stay consistent as the allowlist grows.
 - VIN-spoof observability: `telemetry.Record.applyProtoRecordTransforms` always overwrites a
   payload's claimed `Vin` with the connection-authenticated `record.Vin` (the `V`, `alerts`,
   `errors`, and `connectivity` arms all do `message.Vin = record.Vin`) — this is a silent
@@ -199,6 +214,6 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   `BinarySerializer.ShouldLogVinMismatch()` (an `atomic.Bool` on the per-connection
   `BinarySerializer`, which is constructed once per socket in `server/streaming/server.go`) so a
   misbehaving firmware repeatedly sending a mismatched VIN can't flood the logs — this mirrors the
-  `isExpectedDisconnect` log-volume lesson above. If this warning is extended to the `V`/`alerts`/
-  `errors` arms too, reuse the same `logVinMismatch` helper and per-connection cap rather than
-  adding parallel logic.
+  log-volume-reduction lesson above. If this warning is extended to the `V`/`alerts`/`errors` arms
+  too, reuse the same `logVinMismatch` helper and per-connection cap rather than adding parallel
+  logic.
