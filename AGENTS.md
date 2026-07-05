@@ -203,3 +203,17 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   called `span.RecordError`, producing ~31.8k `exception` events/day that were ~100% benign
   teardown noise while `StatusCode` stayed `Unset` on all spans. Keep the log-side and span-side
   classification using the same function so the two stay consistent as the allowlist grows.
+- VIN-spoof observability: `telemetry.Record.applyProtoRecordTransforms` always overwrites a
+  payload's claimed `Vin` with the connection-authenticated `record.Vin` (the `V`, `alerts`,
+  `errors`, and `connectivity` arms all do `message.Vin = record.Vin`) — this is a silent
+  correction, not a drop. The `connectivity` arm additionally calls `record.logVinMismatch(...)`
+  (`telemetry/record.go`) to emit a `WARN "unexpected_vin"` log (fields: `socket_id`, `txid`,
+  `record_type`, `claimed_vin`, `connection_vin`) when the claimed VIN is non-empty and differs
+  from the authenticated one — added so a future decision to actually DROP spoofed messages can be
+  backed by real incidence data. It's rate-capped to once per connection via
+  `BinarySerializer.ShouldLogVinMismatch()` (an `atomic.Bool` on the per-connection
+  `BinarySerializer`, which is constructed once per socket in `server/streaming/server.go`) so a
+  misbehaving firmware repeatedly sending a mismatched VIN can't flood the logs — this mirrors the
+  log-volume-reduction lesson above. If this warning is extended to the `V`/`alerts`/`errors` arms
+  too, reuse the same `logVinMismatch` helper and per-connection cap rather than adding parallel
+  logic.

@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
@@ -21,7 +22,8 @@ type BinarySerializer struct {
 	DispatchRules   map[string][]Producer
 	RequestIdentity *RequestIdentity
 
-	logger *logrus.Logger
+	logger            *logrus.Logger
+	vinMismatchLogged atomic.Bool
 }
 
 // NewBinarySerializer returns a dedicated serializer for a current socket connection
@@ -96,6 +98,13 @@ func (bs *BinarySerializer) Dispatch(record *Record) {
 // Logger returns logger for the serializer
 func (bs *BinarySerializer) Logger() *logrus.Logger {
 	return bs.logger
+}
+
+// ShouldLogVinMismatch reports whether a claimed/connection VIN mismatch should be logged for this
+// connection. It returns true only the first time it's called per connection, so a single vehicle
+// spoofing (or repeatedly sending a stale) VIN can't flood the logs for the life of the socket.
+func (bs *BinarySerializer) ShouldLogVinMismatch() bool {
+	return bs.vinMismatchLogged.CompareAndSwap(false, true)
 }
 
 func (bs *BinarySerializer) guessError(record *Record, msg []byte) error {
