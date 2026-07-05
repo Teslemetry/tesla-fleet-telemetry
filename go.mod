@@ -13,7 +13,8 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mattn/go-colorable v0.1.13
-	github.com/nats-io/nats.go v1.40.1
+	github.com/nats-io/nats-server/v2 v2.10.29
+	github.com/nats-io/nats.go v1.41.2
 	github.com/onsi/ginkgo/v2 v2.22.2
 	github.com/onsi/gomega v1.36.2
 	github.com/pebbe/zmq4 v1.2.10
@@ -33,7 +34,7 @@ require (
 	go.opentelemetry.io/otel/sdk/log v0.15.0
 	go.opentelemetry.io/otel/sdk/metric v1.39.0
 	go.opentelemetry.io/otel/trace v1.39.0
-	go.uber.org/automaxprocs v1.5.2
+	go.uber.org/automaxprocs v1.6.0
 	google.golang.org/api v0.259.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -67,7 +68,9 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
-	github.com/nats-io/nkeys v0.4.9 // indirect
+	github.com/minio/highwayhash v1.0.3 // indirect
+	github.com/nats-io/jwt/v2 v2.7.4 // indirect
+	github.com/nats-io/nkeys v0.4.11 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_model v0.3.0 // indirect

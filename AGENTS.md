@@ -250,3 +250,58 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   log-volume-reduction lesson above. If this warning is extended to the `V`/`alerts`/`errors` arms
   too, reuse the same `logVinMismatch` helper and per-connection cap rather than adding parallel
   logic.
+
+## NATS integration test harness (`datastore/nats/nats_e2e_test.go`)
+
+- `datastore/nats` is the only dispatcher this fork actually runs in production, and until this
+  harness was added it had zero end-to-end coverage (pure-function unit tests only, per the git
+  history). The harness runs against a real, **in-process embedded NATS server**
+  (`github.com/nats-io/nats-server/v2`, via its importable `.../v2/test` helper package,
+  `test.RunServer`/`RunServerCallback`) rather than the docker-compose harness under
+  `test/integration`. Chosen over docker-compose because: (1) the docker-compose stack's non-NATS
+  services (kafka/kinesis/pubsub/mqtt/zookeeper) exist for dispatchers this fork doesn't run and
+  are targeted for CI trimming, so adding a `nats` service there would grow the stack we're trying
+  to shrink; (2) an embedded server runs in plain `make test`/`go test ./...` — no Docker
+  dependency, no separate opt-in CI job, executes in ~2-4s. The tradeoff: this needs a real Go
+  dependency (`nats-io/nats-server/v2`, test-only) rather than reusing the existing
+  docker-compose/`test/integration` pattern; pinned to `v2.10.29`, the newest tag that still
+  supports `go 1.24.0` (newer tags require `go >= 1.25`, which would force the module's `go`
+  directive up — avoid bumping that opportunistically).
+- Build `*telemetry.Record`s in tests the same way `datastore/mqtt/mqtt_test.go` already does:
+  `messages.StreamMessage{...}.ToBytes()` → `telemetry.NewRecord(serializer, msgBytes, socketID,
+  transmitDecodedRecords)`. This runs the real decode + `applyRecordTransforms` path (VIN stamping,
+  VIN-mismatch warning, etc.) instead of hand-constructing a `Record` struct — don't bypass it.
+  `BinarySerializer.Deserialize` skips the sender-ID/device-ID equality check whenever
+  `DispatchRules` already has an entry for the message's `TxType`, so tests don't need to fuss over
+  matching `SenderID` exactly as long as `dispatchRules[txType]` is populated.
+- **Known issue surfaced while building this harness, not fixed here (out of scope — keep NATS
+  test-harness PRs single-issue):** `datastore/nats/nats.go`'s `NatsConnect(...)` registers a
+  `nats.ClosedHandler` that unconditionally `panic()`s whenever the underlying `*nats.Conn`
+  transitions to the CLOSED state — including a clean, intentional `Producer.Close()` call, not
+  just an unrecoverable error. Reproduced directly: calling `producer.Close()` (or the wrapped
+  `nats.Conn.Close()` it delegates to) always panics, even with a nil `LastError()`.
+  `cmd/main.go`'s `startServer` calls `producer.Close()` on every dispatcher during graceful
+  server shutdown, so today that shutdown path panics instead of exiting cleanly — worth its own
+  follow-up issue. Because of this, the test harness never calls `Producer.Close()` on a real
+  `fleetnats.NewProducer`-constructed producer (only on bare `nats.Connect()`-created test
+  subscriber connections, which don't carry this handler) — reaching for it in a new test will
+  crash the whole `go test` binary for the package, not just fail an assertion.
+- `hook.LastEntry()` (from `github.com/sirupsen/logrus/hooks/test`) is unreliable in these tests:
+  the NATS client's own connection-state handlers (`nats_connected`, `nats_reconnected`,
+  `nats_disconnected`, all registered in `nats.go`'s `NewProducer`) log asynchronously from a
+  background goroutine and can race with — and land after — the synchronous log line a test is
+  actually asserting on. Search `hook.AllEntries()` for the expected `Message` instead (see the
+  `findLogEntry` helper in the test file) rather than asserting against whatever happens to be
+  last.
+- `go.opentelemetry.io/otel`'s global `TracerProvider` delegates to the first *real* (non-default)
+  provider it's ever given exactly once per process (`internal/global/state.go`'s
+  `delegateTraceOnce`, a `sync.Once`). `nats.go`'s package-level `tracer` var is obtained from that
+  global at package-init time, so the first `otel.SetTracerProvider(realProvider)` call anywhere in
+  a test binary permanently wires `tracer` to forward to it — a later `SetTracerProvider(noop)` to
+  "restore" the previous value does not un-delegate already-vended `Tracer` handles. Consequence
+  for tests: any spec asserting "no trace headers when tracing isn't configured" must run *before*
+  any spec that ever configures a real `TracerProvider`, for the lifetime of the whole test binary,
+  not just within its own `BeforeEach`/`AfterEach`. In this file that's handled by ordering
+  (Ginkgo runs sibling leaf specs within the same container in declaration order by default) —
+  don't add a new tracer-configuring spec earlier in `datastore/nats`'s test files without
+  accounting for this.
