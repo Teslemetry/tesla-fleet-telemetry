@@ -360,6 +360,46 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(subConn.Flush()).NotTo(HaveOccurred())
 
+			// The restarted server below is a brand-new *server.Server with no
+			// memory of who was subscribed - core NATS (no JetStream, no
+			// durability) only routes a publish to subscribers already
+			// registered on the broker at the moment it's processed. So once
+			// both subConn and the producer race to reconnect independently,
+			// *whichever wins* decides the outcome: if the producer's buffered
+			// publish reaches the new server before subConn has resubscribed,
+			// it is delivered to no one and silently dropped - not a client bug,
+			// just at-most-once pub/sub semantics. That race, not raw reconnect
+			// latency, is what made this spec CI-timing-sensitive: it usually
+			// resolved in the subscriber's favor locally, but had no ordering
+			// guarantee, so a slower or differently-scheduled CI runner could
+			// flip it. Confirmed by instrumenting both connections' reconnect
+			// order in a standalone repro: delivery failed in every run where
+			// the producer's ReconnectHandler fired before the subscriber's.
+			//
+			// Fix: take the ordering out of the scheduler's hands entirely.
+			// Give the producer's connection an effectively-infinite
+			// ReconnectWait (so it parks in RECONNECTING and never attempts a
+			// reconnect on its own timeline) and capture the underlying
+			// *nats.Conn via the fleetnats.NatsConnect seam (same injection
+			// pattern the "wrong credentials" spec below already uses). Later,
+			// once a probe message has round-tripped through subConn on the
+			// restarted server - proving its subscription is actually
+			// registered there, not just that its TCP handshake completed -
+			// explicitly call producerConn.ForceReconnect() to let it reconnect
+			// and flush the buffered publish. This guarantees the subscriber is
+			// ready before the message can possibly be sent, rather than hoping
+			// a generous timeout keeps happening to work out.
+			var producerConn *natsclient.Conn
+			originalNatsConnect := fleetnats.NatsConnect
+			fleetnats.NatsConnect = func(url string, opts ...natsclient.Option) (*natsclient.Conn, error) {
+				conn, err := originalNatsConnect(url, append(opts, natsclient.ReconnectWait(time.Hour))...)
+				producerConn = conn
+				return conn, err
+			}
+			DeferCleanup(func() {
+				fleetnats.NatsConnect = originalNatsConnect
+			})
+
 			producer, err := newTestProducer(url, namespace, logger, nil, nil)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -377,23 +417,71 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 			srv.Shutdown()
 			srv.WaitForShutdown()
 
+			// srv.WaitForShutdown only confirms the SERVER side has torn down;
+			// it says nothing about whether the producer's client has itself
+			// noticed yet. Publishing before the client's read loop has detected
+			// the broken socket and flipped to RECONNECTING is a race: a write
+			// issued while nats.go still believes it's CONNECTED can be handed
+			// straight to the (already-dead) OS socket - which the kernel may
+			// still accept into its send buffer without an error - rather than
+			// into nats.go's in-memory reconnect buffer, so it never actually
+			// gets (re)transmitted once the server returns. Waiting for the
+			// producer's own DisconnectErrHandler (nats_disconnected, see
+			// datastore/nats/nats.go) closes that window deterministically.
+			Eventually(func() *rawlogrus.Entry {
+				return findLogEntry(hook, "nats_disconnected")
+			}, 5*time.Second, 20*time.Millisecond).ShouldNot(BeNil(), "producer should notice the outage before we publish into it")
+
 			record2, err := buildRecord(vin, "V", "txid-8", marshalVehiclePayload(vin, "During Outage"), map[string][]telemetry.Producer{"V": {producer}}, logger)
 			Expect(err).NotTo(HaveOccurred())
 			record2.Dispatch()
 			Expect(findLogEntry(hook, "nats_err")).To(BeNil(), "a transient outage should not surface a publish error")
 
-			// Bring the server back up on the same address so both the
-			// producer and the subscriber reconnect and resume.
+			// Bring the server back up on the same address. The producer's
+			// connection is parked (ReconnectWait(time.Hour)) and will not
+			// attempt to reconnect until we force it below, so only subConn
+			// races to reconnect here.
 			srv = startNatsServer(&natsserver.Options{Port: port})
 
-			// The producer's underlying nats.Conn reconnects on nats.go's default
-			// 2s ReconnectWait (datastore/nats/nats.go doesn't override it), so
-			// give this generous headroom under CI load rather than a tight bound.
-			var msg *natsclient.Msg
+			// Confirm subConn's subscription is actually registered on the new
+			// server - not merely that its TCP/protocol handshake finished -
+			// via a real round trip: publish a probe on a throwaway connection
+			// and wait for subConn to receive it. Nothing else can be
+			// publishing to this subject yet (the producer is still parked),
+			// so any message subConn receives here is unambiguously the probe.
+			probeConn, err := natsclient.Connect(url)
+			Expect(err).NotTo(HaveOccurred())
+			defer probeConn.Close()
 			Eventually(func() error {
-				msg, err = subscription.NextMsg(3 * time.Second)
-				return err
-			}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
+				if err := probeConn.Publish(subject, []byte("__probe__")); err != nil {
+					return err
+				}
+				probeMsg, err := subscription.NextMsg(200 * time.Millisecond)
+				if err != nil {
+					return err
+				}
+				if string(probeMsg.Data) != "__probe__" {
+					return fmt.Errorf("unexpected message on probe subject: %q", probeMsg.Data)
+				}
+				return nil
+			}, 15*time.Second, 20*time.Millisecond).Should(Succeed(), "subConn should be resubscribed on the restarted server")
+
+			// Only now let the producer reconnect: its subscriber-side
+			// counterpart is provably ready, so the flushed publish below
+			// cannot race a not-yet-registered subscription.
+			Expect(producerConn.ForceReconnect()).To(Succeed())
+
+			Eventually(func() *rawlogrus.Entry {
+				return findLogEntry(hook, "nats_reconnected")
+			}, 5*time.Second, 20*time.Millisecond).ShouldNot(BeNil(), "producer should reconnect once forced")
+
+			// The buffered publish is flushed synchronously as part of the
+			// reconnect handshake (resendSubscriptions then
+			// flushReconnectPendingItems in nats.go's doReconnect), so delivery
+			// follows within milliseconds of the reconnect above; this bound is
+			// a safety margin; it is not load-bearing for correctness.
+			msg, err := subscription.NextMsg(5 * time.Second)
+			Expect(err).NotTo(HaveOccurred())
 
 			var received protos.Payload
 			Expect(proto.Unmarshal(msg.Data, &received)).To(Succeed())
