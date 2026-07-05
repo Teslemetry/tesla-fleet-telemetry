@@ -192,8 +192,11 @@ explicitly in PR descriptions so a human can judge the tradeoff.
   no connection span to scope them to (see above); they carry `close_reason` / `RecordsStats` for
   debugging instead.
 - `isExpectedDisconnect` in `server/streaming/socket.go` classifies known-benign
-  connection-teardown errors (`websocket.ErrCloseSent`, `net.ErrClosed`, and the
-  `crypto/tls` "failed to send closeNotify alert (but connection was closed anyway)" message).
+  connection-teardown errors (`websocket.ErrCloseSent`, `net.ErrClosed`, benign
+  `websocket.CloseError` codes 1000/1001/1005/1006, the `crypto/tls` "failed to send closeNotify
+  alert (but connection was closed anyway)" message, and raw TCP `ECONNRESET` on the read path —
+  matched via `errors.Is(err, syscall.ECONNRESET)` rather than a string match, since a vehicle on a
+  lossy cellular link can drop the connection with a bare RST and no websocket close frame at all).
   Extend this allowlist rather than reverting to blanket `ErrorLog` if new benign teardown error
   strings show up.
 - Teardown logging is deduplicated onto the single `socket_disconnected` line rather than emitted
