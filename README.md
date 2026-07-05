@@ -230,7 +230,7 @@ For detailed configuration, see [metrics/adapter/otel/README.md](./metrics/adapt
 
 To suppress [tls handshake error logging](https://cs.opensource.google/go/go/+/master:src/net/http/server.go;l=1933?q=%22TLS%20handshake%20error%20from%20%22&ss=go%2Fgo), set environment variable `SUPPRESS_TLS_HANDSHAKE_ERROR_LOGGING` to `true`. See [docker compose](./docker-compose.yml) for example.
 
-Connection lifecycle logs are emitted as `socket_connected` and `socket_disconnected`. The disconnect log includes `duration_sec`, per-record byte totals as numeric fields, `total`, and, when a teardown error was observed, `close_reason`. Expected vehicle disconnect errors are folded into `socket_disconnected`; unexpected close/write errors still emit `websocket_close_err` or `socket_err` error logs.
+Connection lifecycle logs are emitted as `socket_connected` and `socket_disconnected`. The disconnect log includes `duration_sec`, per-record byte totals as numeric fields, `total`, and, when a teardown error was observed, `close_reason`. Expected vehicle disconnect errors, including benign websocket close codes and raw TCP connection resets, are folded into `socket_disconnected`; unexpected close/write errors still emit `websocket_close_err` or `socket_err` error logs.
 
 ### OpenTelemetry Logging
 When `logging: true` is set in the OpenTelemetry configuration, all application logs are also exported via OTLP to your configured endpoint. Logs include severity levels, timestamps, and structured fields from the application.
