@@ -194,7 +194,8 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 	metricsRegistry.bytesTotal.Add(int64(entry.Length()), map[string]string{"record_type": entry.TxType})
 }
 
-// Close the producer
+// Close intentionally closes the producer without treating the NATS CLOSED
+// callback as a fatal connection loss.
 func (p *Producer) Close() error {
 	p.closing.Store(true)
 	p.natsConn.Close()

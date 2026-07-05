@@ -112,7 +112,7 @@ Server config example: `examples/server_config.json`
 Key configuration fields:
 - `records`: Maps record types to dispatcher arrays
 - `reliable_ack_sources`: Maps record types to single dispatcher for ack confirmation
-- `namespace`: Topic prefix for message routing
+- `namespace`: Topic/subject prefix for message routing
 - `transmit_decoded_records`: true for JSON output, false for protobuf
 
 ## CI Notes
