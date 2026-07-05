@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beefsack/go-rate"
@@ -36,6 +37,22 @@ const ReadWriteExitDeadline = 50 * time.Millisecond
 // WriteLoopDeadline is the read/write deadline in the main loop
 const WriteLoopDeadline = 10 * time.Second
 
+// chunkMaxDuration bounds a single connection "chunk" span's wall-clock lifetime.
+// A vehicle can hold one websocket open for many hours (p99 ~8.76h), so instead
+// of one span per connection we rotate a fresh chunk span periodically. This keeps
+// span durations finite/queryable and bounds crash/restart loss to at most one
+// chunk. See the long-spans-judge-k4 design.
+const chunkMaxDuration = 30 * time.Minute
+
+// chunkMaxEvents rotates the chunk span before it reaches the OTel SDK's default
+// 128-event span limit (which today silently truncates ~13.8% of sessions). Each
+// chunk therefore starts with a fresh event budget.
+const chunkMaxEvents = 100
+
+// errServerShutdown is recorded as the close_reason when a socket is torn down by
+// the graceful-drain path (SIGTERM/SIGINT) rather than a vehicle-initiated close.
+var errServerShutdown = errors.New("server_shutdown")
+
 // SocketManager is a struct responsible for managing the socket connection with the clients
 type SocketManager struct {
 	Ws           *websocket.Conn
@@ -53,6 +70,22 @@ type SocketManager struct {
 	writeChan              chan SocketMessage
 	transmitDecodedRecords bool
 	vinsSignalTracking     map[string]struct{}
+
+	// activeLogger holds the logger scoped to the current chunk span's context so
+	// log lines carry the live chunk's trace_id/span_id. It is swapped atomically
+	// on every chunk rotation because the writer/ack goroutines read it (via log())
+	// concurrently with the read loop that rotates chunks. A nil value (e.g. before
+	// ProcessTelemetry runs, as in unit tests) falls back to the base logger.
+	activeLogger atomic.Pointer[logrus.Logger]
+
+	// Chunk span bookkeeping. These are mutated only by the ProcessTelemetry read
+	// loop (and its deferred teardown, which runs on the same goroutine), so they
+	// need no locking. The graceful-drain path never touches them directly - it
+	// closes the socket, which unblocks the read loop into its normal teardown.
+	chunkSpan   trace.Span
+	chunkStart  time.Time
+	chunkEvents int
+	chunkIndex  int
 
 	closeReasonMu sync.Mutex
 	closeReason   string
@@ -190,23 +223,116 @@ func (sm *SocketManager) recordCloseReason(err error) {
 	}
 }
 
+// log returns the logger scoped to the current chunk span (so log lines correlate
+// to the live chunk's trace), falling back to the base logger before any chunk has
+// started. Cheap enough for per-message call sites - it's a single atomic load.
+func (sm *SocketManager) log() *logrus.Logger {
+	if l := sm.activeLogger.Load(); l != nil {
+		return l
+	}
+	return sm.logger
+}
+
+// startChunk opens a fresh rolling "chunk" span for the connection and re-points
+// log/trace correlation at it. Every chunk carries the same connection.socket_id /
+// vehicle.vin so chunks (and the connect/disconnect spans) correlate by attribute
+// rather than by a single long-lived parent span.
+func (sm *SocketManager) startChunk() {
+	ctx, span := otelapi.Tracer("fleet-telemetry").Start(context.Background(), "websocket.chunk",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(
+			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
+			attribute.String("connection.socket_id", sm.UUID),
+			attribute.String("network_interface", sm.GetNetworkInterface()),
+			attribute.Int("connection.chunk_index", sm.chunkIndex),
+		),
+	)
+	sm.chunkSpan = span
+	sm.chunkStart = time.Now()
+	sm.chunkEvents = 0
+	sm.activeLogger.Store(sm.logger.WithContext(ctx))
+}
+
+// endChunk closes the current chunk span, if any. Idempotent.
+func (sm *SocketManager) endChunk() {
+	if sm.chunkSpan == nil {
+		return
+	}
+	sm.chunkSpan.SetAttributes(attribute.Int("connection.chunk_events", sm.chunkEvents))
+	sm.chunkSpan.End()
+	sm.chunkSpan = nil
+}
+
+// rotateChunkIfNeeded rotates the chunk span once it exceeds the time or event
+// budget. This is time/count-gated bookkeeping (one int compare + one time.Since)
+// so it stays cheap on the per-message hot path.
+func (sm *SocketManager) rotateChunkIfNeeded() {
+	if sm.chunkEvents < chunkMaxEvents && time.Since(sm.chunkStart) < chunkMaxDuration {
+		return
+	}
+	sm.endChunk()
+	sm.chunkIndex++
+	sm.startChunk()
+}
+
+// addChunkEvent records a span event on the current chunk and counts it toward the
+// rotation budget.
+func (sm *SocketManager) addChunkEvent(name string, opts ...trace.EventOption) {
+	if sm.chunkSpan == nil {
+		return
+	}
+	sm.chunkSpan.AddEvent(name, opts...)
+	sm.chunkEvents++
+}
+
+// RequestClose unblocks the read loop so ProcessTelemetry's normal teardown runs
+// (ending the current chunk, emitting the disconnect span, logging
+// socket_disconnected). Used by the graceful-drain path on SIGTERM/SIGINT. Safe to
+// call from another goroutine: it only records a close reason and closes the
+// underlying connection, which is what wakes ReadMessage.
+func (sm *SocketManager) RequestClose() {
+	sm.recordCloseReason(errServerShutdown)
+	_ = sm.Ws.Close()
+}
+
 // Close shuts down a socket connection for a single client and log metrics
 func (sm *SocketManager) Close() {
 	if err := sm.Ws.Close(); err != nil {
 		sm.recordCloseReason(err)
 		if !isExpectedDisconnect(err) {
-			sm.logger.ErrorLog("websocket_close_err", err, nil)
+			sm.log().ErrorLog("websocket_close_err", err, nil)
 		}
 	}
 
 	socketMetrics := sm.RecordsStatsToLogInfo()
-	socketMetrics["duration_sec"] = int(time.Since(sm.StartTime) / time.Second) // Result is in nanosecond, converting it to seconds
+	durationSec := int(time.Since(sm.StartTime) / time.Second) // Result is in nanosecond, converting it to seconds
+	socketMetrics["duration_sec"] = durationSec
 	sm.closeReasonMu.Lock()
-	if sm.closeReason != "" {
-		socketMetrics["close_reason"] = sm.closeReason
-	}
+	closeReason := sm.closeReason
 	sm.closeReasonMu.Unlock()
-	sm.logger.ActivityLog("socket_disconnected", socketMetrics)
+	if closeReason != "" {
+		socketMetrics["close_reason"] = closeReason
+	}
+	sm.log().ActivityLog("socket_disconnected", socketMetrics)
+
+	// Short disconnect span (correlated to the connect/chunk spans by
+	// connection.socket_id) carrying the final duration, close reason and total
+	// bytes so session-level teardown is queryable without a long-lived span.
+	totalBytes, _ := socketMetrics["total"].(int)
+	disconnectAttrs := []attribute.KeyValue{
+		attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
+		attribute.String("connection.socket_id", sm.UUID),
+		attribute.Int("duration_sec", durationSec),
+		attribute.Int("records.total_bytes", totalBytes),
+	}
+	if closeReason != "" {
+		disconnectAttrs = append(disconnectAttrs, attribute.String("close_reason", closeReason))
+	}
+	_, disconnectSpan := otelapi.Tracer("fleet-telemetry").Start(context.Background(), "websocket.disconnect",
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(disconnectAttrs...),
+	)
+	disconnectSpan.End()
 }
 
 // RecordsStatsToLogInfo converts the stats map into a loggable map, keeping values int-typed
@@ -229,22 +355,26 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 	}()
 
 	tracer := otelapi.Tracer("fleet-telemetry")
-	ctx, span := tracer.Start(context.Background(), "websocket_connection",
+
+	// (a) Short connect span at accept. Server kind, one-shot, exported immediately.
+	_, connectSpan := tracer.Start(context.Background(), "websocket.connect",
+		trace.WithSpanKind(trace.SpanKindServer),
 		trace.WithAttributes(
 			attribute.String("vehicle.vin", sm.requestIdentity.DeviceID),
 			attribute.String("connection.socket_id", sm.UUID),
 			attribute.String("network_interface", sm.GetNetworkInterface()),
 		),
 	)
-	defer span.End()
+	connectSpan.End()
 
-	// Scope all logging for this connection's lifetime to the span's context, so
-	// every log line emitted while handling this vehicle carries trace_id/span_id.
-	// sm.writer() is started below (as a goroutine), so this write happens-before
-	// its reads of sm.logger and needs no additional synchronization.
-	sm.logger = sm.logger.WithContext(ctx)
+	// (b) First rolling chunk span. rotateChunkIfNeeded rotates it on the read loop
+	// as time/event budgets are exceeded; the deferred endChunk closes the last one.
+	// startChunk also re-points log/trace correlation at the current chunk span, so
+	// every log line for this connection carries the live chunk's trace_id/span_id.
+	sm.startChunk()
+	defer sm.endChunk()
 
-	sm.logger.ActivityLog("socket_connected", sm.requestInfo)
+	sm.log().ActivityLog("socket_connected", sm.requestInfo)
 	go sm.writer()
 	var rl *rate.RateLimiter
 
@@ -267,16 +397,19 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 			if err != nil {
 				sm.recordCloseReason(err)
 				if isExpectedDisconnect(err) {
-					span.AddEvent("disconnect", trace.WithAttributes(
+					sm.addChunkEvent("disconnect", trace.WithAttributes(
 						attribute.String("disconnect.reason", err.Error()),
 					))
-				} else {
-					span.RecordError(err)
-					span.SetStatus(codes.Error, "read failure")
+				} else if sm.chunkSpan != nil {
+					sm.chunkSpan.RecordError(err)
+					sm.chunkSpan.SetStatus(codes.Error, "read failure")
 				}
 			}
 			return
 		}
+
+		// rotate the chunk span once it exceeds its time/event budget
+		sm.rotateChunkIfNeeded()
 
 		// check rate limit
 		if rl != nil {
@@ -289,7 +422,7 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 				record, _ := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
 				sm.trackSignalUsage(record)
 				metricsRegistry.rateLimitExceededCount.Inc(map[string]string{"device_id": sm.requestIdentity.DeviceID, "txtype": record.TxType})
-				span.AddEvent("rate_limit_exceeded", trace.WithAttributes(
+				sm.addChunkEvent("rate_limit_exceeded", trace.WithAttributes(
 					attribute.String("record.tx_type", record.TxType),
 					attribute.Int("messages_dropped", messagesRateLimited),
 				))
@@ -300,14 +433,14 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 				if len(parts) > 2 {
 					duration := time.Since(rateLimitStartTime) / time.Second
 
-					sm.logger.ErrorLog("rate_limit_exceeded", nil, logrus.LogInfo{"txid": parts[2], "duration_sec": duration, "messages_rate_limited": messagesRateLimited})
+					sm.log().ErrorLog("rate_limit_exceeded", nil, logrus.LogInfo{"txid": parts[2], "duration_sec": duration, "messages_rate_limited": messagesRateLimited})
 				}
 				messagesRateLimited = 0
 			}
 		}
 		record := sm.ParseAndProcessRecord(serializer, message)
 		if record != nil {
-			span.AddEvent("message_received", trace.WithAttributes(
+			sm.addChunkEvent("message_received", trace.WithAttributes(
 				attribute.String("record.tx_type", record.TxType),
 				attribute.String("record.txid", record.Txid),
 				attribute.Int("record.size_bytes", len(message)),
@@ -341,14 +474,14 @@ func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySeria
 		case *telemetry.UnauthorizedSenderIDError:
 			logInfo["sender_id"] = typedError.ReceivedSenderID
 			logInfo["expected_sender_id"] = typedError.ExpectedSenderID
-			sm.logger.ErrorLog("unauthorized_sender_id", nil, logInfo)
+			sm.log().ErrorLog("unauthorized_sender_id", nil, logInfo)
 			metricsRegistry.unauthorizedSenderCount.Inc(map[string]string{})
 			sm.respondToVehicle(record, nil) // respond to the client message was accepted so they are not resending it over and over
 			return record
 		case *telemetry.UnknownMessageType:
 			logInfo["msg_txid"] = typedError.Txid
 			logInfo["msg_type"] = string(typedError.GuessedType)
-			sm.logger.ErrorLog("unknown_message_type_error", err, logInfo)
+			sm.log().ErrorLog("unknown_message_type_error", err, logInfo)
 			metricsRegistry.unknownMessageTypeErrorCount.Inc(map[string]string{"msg_type": string(typedError.GuessedType)})
 			sm.respondToVehicle(record, nil) // respond to the client message was accepted so they are not resending it over and over
 		default:
@@ -385,7 +518,7 @@ func (sm *SocketManager) respondToVehicle(record *telemetry.Record, err error) {
 	logInfo := logrus.LogInfo{"txid": record.Txid, "record_type": record.TxType, "device_id": sm.requestIdentity.DeviceID}
 
 	if err != nil {
-		sm.logger.ErrorLog("unexpected_record", err, logInfo)
+		sm.log().ErrorLog("unexpected_record", err, logInfo)
 		metricsRegistry.unexpectedRecordErrorCount.Inc(map[string]string{})
 		response = record.Error(errors.New("incorrect message format"))
 		logInfo["response_type"] = "error"
@@ -394,21 +527,21 @@ func (sm *SocketManager) respondToVehicle(record *telemetry.Record, err error) {
 		response = record.Ack()
 	}
 
-	sm.logger.Log(logrus.DEBUG, "message_respond", logInfo)
+	sm.log().Log(logrus.DEBUG, "message_respond", logInfo)
 	sm.writeChan <- SocketMessage{sm.MsgType, record.Txid, response}
 }
 
 func (sm *SocketManager) writer() {
 	defer func() {
 
-		sm.logger.Log(logrus.DEBUG, "writer_done", nil)
+		sm.log().Log(logrus.DEBUG, "writer_done", nil)
 		_ = sm.Ws.SetReadDeadline(time.Now().Add(ReadWriteExitDeadline))
 	}()
 
 	for {
 		select {
 		case <-sm.stopChan:
-			sm.logger.Log(logrus.DEBUG, "return_stop_chan", nil)
+			sm.log().Log(logrus.DEBUG, "return_stop_chan", nil)
 			return
 		case msg := <-sm.writeChan:
 			err := sm.writeMessage(msg.MsgType, msg.Msg)
@@ -416,7 +549,7 @@ func (sm *SocketManager) writer() {
 				metricsRegistry.socketErrorCount.Inc(map[string]string{})
 				sm.recordCloseReason(err)
 				if !isExpectedDisconnect(err) {
-					sm.logger.ErrorLog("socket_err", err, logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID})
+					sm.log().ErrorLog("socket_err", err, logrus.LogInfo{"txid": msg.Txid, "device_id": sm.requestIdentity.DeviceID})
 				}
 				return
 			}
