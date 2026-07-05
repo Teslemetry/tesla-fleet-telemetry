@@ -466,17 +466,42 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 			Expect(msg.Subject).To(Equal(subject))
 		})
 
-		It("fails to connect with the wrong credentials", func() {
+		It("does not publish with the wrong credentials embedded in the config URL", func() {
 			authSrv := startNatsServer(&natsserver.Options{Port: -1, Username: "fleet-telemetry", Password: "s3cret"})
 			defer func() {
 				authSrv.Shutdown()
 				authSrv.WaitForShutdown()
 			}()
 
+			const namespace, vin = "telemetry", "5YJAUTHFAIL000007"
+			authedURL := fmt.Sprintf("nats://fleet-telemetry:s3cret@%s", authSrv.Addr().String())
 			badURL := fmt.Sprintf("nats://fleet-telemetry:wrong@%s", authSrv.Addr().String())
-			_, err := natsclient.Connect(badURL, natsclient.Timeout(2*time.Second), natsclient.RetryOnFailedConnect(false))
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("Authorization"))
+
+			sub, err := natsclient.Connect(authedURL)
+			Expect(err).NotTo(HaveOccurred())
+			defer sub.Close()
+			subject := fmt.Sprintf("%s.%s.data", namespace, vin)
+			subscription, err := sub.SubscribeSync(subject)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sub.Flush()).NotTo(HaveOccurred())
+
+			originalNatsConnect := fleetnats.NatsConnect
+			fleetnats.NatsConnect = func(url string, opts ...natsclient.Option) (*natsclient.Conn, error) {
+				return originalNatsConnect(url, append(opts, natsclient.Timeout(2*time.Second))...)
+			}
+			DeferCleanup(func() {
+				fleetnats.NatsConnect = originalNatsConnect
+			})
+
+			producer, err := newTestProducer(badURL, namespace, logger, nil, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			record, err := buildRecord(vin, "V", "txid-11", marshalVehiclePayload(vin, "Unauthorized Vehicle"), map[string][]telemetry.Producer{"V": {producer}}, logger)
+			Expect(err).NotTo(HaveOccurred())
+			record.Dispatch()
+
+			_, err = subscription.NextMsg(500 * time.Millisecond)
+			Expect(err).To(MatchError(natsclient.ErrTimeout))
 		})
 	})
 })
