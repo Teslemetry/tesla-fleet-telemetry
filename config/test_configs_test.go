@@ -8,14 +8,11 @@ const TestConfig = `{
 	"json_log_enable": true,
 	"namespace": "tesla_telemetry",
 	"reliable_ack_sources": {
-		"V": "kafka"
+		"V": "nats"
 	},
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"monitoring": {
 		"prometheus_metrics_port": 9090,
@@ -28,7 +25,7 @@ const TestConfig = `{
 		"message_limit": 1000
 	},
 	"records": {
-		"V": ["kafka"]
+		"V": ["nats"]
 	},
 	"tls": {
 		"ca_file": "tesla.ca",
@@ -44,15 +41,12 @@ const TestSmallConfig = `
 	"port": 443,
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka"]
+		"V": ["nats"]
 	},
 	"tls": {
 		"ca_file": "tesla.ca",
@@ -68,15 +62,12 @@ const BadVinsConfig = `
 	"port": 443,
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka"]
+		"V": ["nats"]
 	},
 	"vins_signal_tracking_enabled": ["vin1", "vin2", "vin3"],
 	"tls": {
@@ -93,17 +84,14 @@ const TestBadReliableAckConfig = `
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
 	"reliable_ack_sources": {
-		"V": "pubsub"
+		"V": "some_unconfigured_dispatcher"
 	},
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka"]
+		"V": ["nats"]
 	},
 	"tls": {
 		"ca_file": "tesla.ca",
@@ -122,15 +110,12 @@ const TestLoggerAsReliableAckConfig = `
 	"reliable_ack_sources": {
 		"V": "logger"
 	},
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka", "logger"]
+		"V": ["nats", "logger"]
 	},
 	"tls": {
 		"ca_file": "tesla.ca",
@@ -147,17 +132,14 @@ const TestUnusedTxTypeAsReliableAckConfig = `
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
 	"reliable_ack_sources": {
-		"error": "kafka"
+		"error": "nats"
 	},
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka", "logger"]
+		"V": ["nats", "logger"]
 	},
 	"tls": {
 		"ca_file": "tesla.ca",
@@ -167,40 +149,11 @@ const TestUnusedTxTypeAsReliableAckConfig = `
 }
 `
 
-const TestPubsubConfig = `
-{
-	"host": "127.0.0.1",
-	"port": 443,
-	"status_port": 8080,
-	"pubsub": {
-        "gcp_project_id": "some-project-id",
-		"reliable_ack": "true"
-    },
-	"records": {
-		"V": ["pubsub"]
-	}
-}
-`
-
 const BadTopicConfig = `
 {
 	"host": "127.0.0.1",
 	"port": "",
 }`
-
-const TestZMQConfig = `
-{
-  "host": "127.0.0.1",
-  "port": 443,
-  "status_port": 8080,
-  "zmq": {
-    "addr": "tcp://127.0.0.1:5288"
-  },
-  "records": {
-    "V": ["zmq"]
-  }
-}
-`
 
 const TestTransmitDecodedRecords = `
 {
@@ -233,15 +186,12 @@ const TestAirbrakeConfig = `
 	"port": 443,
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka"]
+		"V": ["nats"]
 	},
 	"tls": {
 		"ca_file": "tesla.ca",
@@ -264,18 +214,15 @@ const TestBadTxTypeReliableAckConfig = `
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
 	"reliable_ack_sources": {
-		"connectivity": "kafka"
+		"connectivity": "nats"
 	},
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka"],
-		"connectivity": ["kafka"]
+		"V": ["nats"],
+		"connectivity": ["nats"]
 	},
 	"tls": {
 		"server_cert": "your_own_cert.crt",
@@ -291,21 +238,18 @@ const TestMultipleTxTypeReliableAckConfig = `
 	"status_port": 8080,
 	"namespace": "tesla_telemetry",
 	"reliable_ack_sources": {
-		"V": "kafka",
-		"errors": "kafka",
-		"alerts": "mqtt"
+		"V": "nats",
+		"errors": "nats",
+		"alerts": "nats"
 	},
-	"kafka": {
-		"bootstrap.servers": "some.broker1:9093,some.broker1:9093",
-		"ssl.ca.location": "kafka.ca",
-		"ssl.certificate.location": "kafka.crt",
-		"ssl.key.location": "kafka.key",
-		"queue.buffering.max.messages": 1000000
+	"nats": {
+		"url": "nats://some.broker1:4222",
+		"name": "fleet-telemetry"
 	},
 	"records": {
-		"V": ["kafka"],
-		"errors": ["kafka", "mqtt"],
-		"alerts": ["mqtt"]
+		"V": ["nats"],
+		"errors": ["nats"],
+		"alerts": ["nats"]
 	},
 	"tls": {
 		"server_cert": "your_own_cert.crt",

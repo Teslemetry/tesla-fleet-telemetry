@@ -3,11 +3,10 @@ package config
 import (
 	"os"
 
-	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/teslamotors/fleet-telemetry/datastore/nats"
 	"github.com/teslamotors/fleet-telemetry/metrics"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/noop"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/prometheus"
@@ -23,19 +22,16 @@ var _ = Describe("Test application config initialization", func() {
 			Namespace:          "tesla_telemetry",
 			TLS:                &TLS{CAFile: "tesla.ca", ServerCert: "your_own_cert.crt", ServerKey: "your_own_key.key"},
 			RateLimit:          &RateLimit{Enabled: true, MessageLimit: 1000, MessageInterval: 30},
-			ReliableAckSources: map[string]telemetry.Dispatcher{"V": telemetry.Kafka},
-			Kafka: &confluent.ConfigMap{
-				"bootstrap.servers":            "some.broker1:9093,some.broker1:9093",
-				"ssl.ca.location":              "kafka.ca",
-				"ssl.certificate.location":     "kafka.crt",
-				"ssl.key.location":             "kafka.key",
-				"queue.buffering.max.messages": float64(1000000),
+			ReliableAckSources: map[string]telemetry.Dispatcher{"V": telemetry.NATS},
+			NATS: &nats.Config{
+				URL:  "nats://some.broker1:4222",
+				Name: "fleet-telemetry",
 			},
 			Monitoring:      &metrics.MonitoringConfig{PrometheusMetricsPort: 9090, ProfilerPort: 4269, ProfilingPath: "/tmp/fleet-telemetry/profile"},
 			MetricCollector: prometheus.NewCollector(),
 			LogLevel:        "info",
 			JSONLogEnable:   true,
-			Records:         map[string][]telemetry.Dispatcher{"V": {"kafka"}},
+			Records:         map[string][]telemetry.Dispatcher{"V": {"nats"}},
 		}
 
 		loadedConfig, err := loadTestApplicationConfig(TestConfig)
@@ -54,15 +50,12 @@ var _ = Describe("Test application config initialization", func() {
 			StatusPort: 8080,
 			Namespace:  "tesla_telemetry",
 			TLS:        &TLS{CAFile: "tesla.ca", ServerCert: "your_own_cert.crt", ServerKey: "your_own_key.key"},
-			Kafka: &confluent.ConfigMap{
-				"bootstrap.servers":            "some.broker1:9093,some.broker1:9093",
-				"ssl.ca.location":              "kafka.ca",
-				"ssl.certificate.location":     "kafka.crt",
-				"ssl.key.location":             "kafka.key",
-				"queue.buffering.max.messages": float64(1000000),
+			NATS: &nats.Config{
+				URL:  "nats://some.broker1:4222",
+				Name: "fleet-telemetry",
 			},
 			MetricCollector: noop.NewCollector(),
-			Records:         map[string][]telemetry.Dispatcher{"V": {"kafka"}},
+			Records:         map[string][]telemetry.Dispatcher{"V": {"nats"}},
 		}
 
 		loadedConfig, err := loadTestApplicationConfig(TestSmallConfig)

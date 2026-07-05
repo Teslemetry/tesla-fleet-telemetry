@@ -1,5 +1,4 @@
 # enabling gofmt and golint since by default they're not enabled by golangci-lint
-VERSION           = $(shell go version)
 LINTER			  = golangci-lint run -v $(LINTER_FLAGS) --exclude-use-default=false --timeout $(LINTER_DEADLINE)
 LINTER_DEADLINE	  = 30s
 LINTER_FLAGS ?=
@@ -7,15 +6,6 @@ ALPHA_IMAGE_NAME=fleet-telemetry-server-aplha:v0.0.1
 ALPHA_IMAGE_COMPRESSED_FILENAME := $(subst :,-, $(ALPHA_IMAGE_NAME))
 
 GO_FLAGS        ?=
-GO_FLAGS        += --ldflags 'extldflags="-static"'
-
-ifneq (,$(findstring darwin/arm,$(VERSION)))
-    GO_FLAGS += -tags dynamic
-endif
-ifneq (,$(wildcard /etc/alpine-release))
-    GO_FLAGS += -tags musl
-LINTER_FLAGS += --build-tags=musl
-endif
 
 INTEGRATION_TEST_ROOT		= ./test/integration
 UNIT_TEST_PACKAGES			= $(shell go list ./... | grep -v $(INTEGRATION_TEST_ROOT))
