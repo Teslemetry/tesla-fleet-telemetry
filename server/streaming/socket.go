@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/beefsack/go-rate"
@@ -168,6 +169,15 @@ func isExpectedDisconnect(err error) bool {
 		return false
 	}
 	if errors.Is(err, websocket.ErrCloseSent) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	// Vehicles on lossy cellular links routinely drop the raw TCP connection
+	// without sending any FIN or websocket close frame, which the kernel surfaces
+	// as ECONNRESET on the next read - "read tcp ...: read: connection reset by
+	// peer". There's no close frame to unwrap to a *websocket.CloseError here, so
+	// this needs its own check; matched narrowly on ECONNRESET so genuine faults
+	// still fall through to Error.
+	if errors.Is(err, syscall.ECONNRESET) {
 		return true
 	}
 	// Vehicles routinely drop the socket without a proper close handshake (lost

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"syscall"
 	"testing"
 
 	"github.com/gorilla/websocket"
@@ -31,6 +33,13 @@ func TestIsExpectedDisconnect(t *testing.T) {
 		{"ws close 1006 abnormal closure", &websocket.CloseError{Code: websocket.CloseAbnormalClosure}, true},
 		{"wrapped ws close 1006", fmt.Errorf("read: %w", &websocket.CloseError{Code: websocket.CloseAbnormalClosure}), true},
 		{"ws close 1011 internal error stays unexpected", &websocket.CloseError{Code: websocket.CloseInternalServerErr}, false},
+		{
+			"read tcp connection reset by peer",
+			&net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)},
+			true,
+		},
+		{"wrapped connection reset by peer", fmt.Errorf("wrap: %w", syscall.ECONNRESET), true},
+		{"unrelated syscall error stays unexpected", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNREFUSED)}, false},
 		{"unrelated error", errors.New("unexpected EOF"), false},
 	}
 

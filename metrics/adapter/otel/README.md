@@ -95,7 +95,7 @@ Log severity mapping:
 
 When `tracing: true` is enabled, Fleet Telemetry exports OTLP spans through the same endpoint, protocol, TLS mode, and service name as metrics. The default sampler exports 1% of root traces; set `trace_sample_rate` to a value between `0.0` and `1.0` to override it.
 
-Spans follow the data path rather than the connection. Dispatchers that support tracing (currently the NATS producer) emit a short span per published record and inject the W3C trace context into the outgoing message headers, so downstream consumers join the same trace. There is intentionally no per-connection span: a websocket can stay open for many hours, which makes a single session span unqueryable and right-censors "currently connected" trace queries. Connection lifecycle is surfaced through the `socket_connected` / `socket_disconnected` logs and the `num_connected_sockets` metric instead.
+Spans follow the data path rather than the connection. Dispatchers that support tracing (currently the NATS producer) emit a short span per published record and inject the W3C trace context into the outgoing message headers, so downstream consumers join the same trace. There is intentionally no per-connection span: a websocket can stay open for many hours, which makes a single session span unqueryable and right-censors "currently connected" trace queries. Connection lifecycle is surfaced through the `socket_connected` / `socket_disconnected` logs and the `num_connected_sockets` metric instead; expected teardown errors, including raw TCP connection resets, stay on the disconnect log rather than producing span errors.
 
 ## Example Configurations
 
