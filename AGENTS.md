@@ -117,7 +117,9 @@ Key configuration fields:
 
 ## CI Notes
 
-The "Build and Test" workflow (`.github/workflows/build.yml`) runs as one job: proto-gen check, format check, `golangci-lint` (via `golangci-lint-action`, separate from the later `make linters` step), package tests, then `make integration` (docker-compose based, no external secrets needed — all backends are local emulators/containers). A step failing aborts the rest of the job, so a red run can be masking failures in later steps.
+The "Build and Test" workflow (`.github/workflows/build.yml`) has two jobs. `build` (runs on every push/PR) does proto-gen check, format check, `golangci-lint` (via `golangci-lint-action`, separate from the later `make linters` step), then package tests (`make test`, which includes the embedded-NATS e2e specs). A step failing aborts the rest of the job, so a red run can be masking failures in later steps.
+
+`integration` (`make integration`, docker-compose based, no external secrets needed — all backends are local emulators/containers) is opt-in, not run by default: it only fires on `workflow_dispatch` or when a PR carries the `run-integration-tests` label (which requires `labeled` in the `pull_request` `types:` list, or the label won't retrigger a run on an already-open PR). This was gated off the default path because 5 of its 9 containers (`zookeeper`, `kafka`, `mqtt`, `pubsub`, `kinesis`) plus their consumer tests only exercise dispatchers we don't run in production — NATS is the only dispatcher we run, and it isn't part of `test/integration` at all (it's covered by `make test`'s embedded-server specs instead, see the NATS harness note below). Source: producer-judge scout report (`ft-producer-judge-h8`), recommendation 2. To revert, drop the `integration:` job and its `if:`/`needs:` back into a single job, and remove `workflow_dispatch`/the `labeled` type from `on:`.
 
 `cloud.google.com/go/pubsub` is deprecated in favor of `.../pubsub/v2`; the v1 usages are suppressed with `//nolint:staticcheck` at each import until someone does the v2 migration — don't blanket-disable staticcheck for this, keep the nolint scoped to the pubsub import lines.
 

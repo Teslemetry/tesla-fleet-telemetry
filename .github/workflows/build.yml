@@ -5,6 +5,10 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    # "labeled" added so adding run-integration-tests to an open PR (see the
+    # `integration` job below) actually triggers a run, not just the next push.
+    types: [ opened, synchronize, reopened, labeled ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -39,7 +43,7 @@ jobs:
 
     - name: Install ZMQ
       run: sudo apt update -y && sudo apt upgrade -y && sudo apt install libsodium-dev libzmq3-dev
-    
+
     - name: Setup golangci-lint
       uses: golangci/golangci-lint-action@v6
       with:
@@ -50,6 +54,25 @@ jobs:
 
     - name: Test
       run: make test
+
+  # Opt-in only: docker-compose brings up kafka/kinesis/pubsub/mqtt/zookeeper
+  # (5 of 9 containers) purely to exercise dispatchers we don't run in
+  # production (NATS is our only production dispatcher, and it's already
+  # covered end-to-end by the embedded-server specs in `make test`, see
+  # datastore/nats/nats_e2e_test.go). Trigger manually via
+  # `gh workflow run build.yml` / the Actions "Run workflow" button, or by
+  # adding the `run-integration-tests` label to a PR.
+  integration:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'run-integration-tests')
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.24.0
 
     - name: Integration Test
       run: make integration
