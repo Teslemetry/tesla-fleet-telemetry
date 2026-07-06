@@ -73,7 +73,7 @@ type Config struct {
 	// ZMQ configures a zeromq socket
 	ZMQ *zmq.Config `json:"zmq,omitempty"`
 
-	// Namespace defines a prefix for the kafka/pubsub topic
+	// Namespace defines a prefix for dispatcher topics or subjects
 	Namespace string `json:"namespace,omitempty"`
 
 	// Monitoring defines information for metrics
@@ -88,7 +88,7 @@ type Config struct {
 	// JSONLogEnable if true log in json format
 	JSONLogEnable bool `json:"json_log_enable,omitempty"`
 
-	// Records is a mapping of topics (records type) to a reference dispatch implementation (i,e: kafka)
+	// Records is a mapping of record types to dispatcher implementations
 	Records map[string][]telemetry.Dispatcher `json:"records,omitempty"`
 
 	// TransmitDecodedRecords if true decodes proto message before dispatching it to supported datastores
@@ -319,7 +319,7 @@ func (c *Config) prometheusEnabled() bool {
 	return false
 }
 
-// ConfigureProducers validates and establishes connections to the producers (kafka/pubsub/logger)
+// ConfigureProducers validates and establishes connections to the configured producers
 func (c *Config) ConfigureProducers(airbrakeHandler *airbrake.Handler, logger *logrus.Logger, test bool) (map[telemetry.Dispatcher]telemetry.Producer, map[string][]telemetry.Producer, error) {
 	var pubsubTxTypes []string
 	reliableAckSources, err := c.configureReliableAckSources()

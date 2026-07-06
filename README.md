@@ -42,7 +42,7 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
 ### Install steps
 1. Allocate and assign a [FQDN](https://en.wikipedia.org/wiki/Fully_qualified_domain_name). This will be used in the server and client (vehicle) configuration.
 
-2. Design a simple hosting architecture. We recommend: Firewall/Loadbalancer -> Fleet Telemetry -> Kafka.
+2. Design a simple hosting architecture. This fork's production path is: Firewall/Loadbalancer -> Fleet Telemetry -> NATS.
 
 3. Ensure mTLS connections are terminated on the Fleet Telemetry service.
 
@@ -54,7 +54,9 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
   "log_level": string - trace, debug, info, warn, error,
   "json_log_enable": bool,
   "namespace": string - dispatcher topic/subject prefix,
-  "reliable_ack": bool - for use with reliable datastores, recommend setting to true with kafka,
+  "reliable_ack_sources": { // optional; map each record type to one reliable dispatcher
+    "V": "nats"
+  },
   "transmit_decoded_records": bool - if true, transmit JSON to dispatchers instead of proto.
   "monitoring": {
     "prometheus_metrics_port": int,
@@ -96,8 +98,7 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
         "logger"
     ],
     "V": [
-        "kinesis",
-        "kafka"
+        "nats"
     ]
   },
   "tls": {
@@ -152,8 +153,8 @@ spec:
 Vehicles must be running firmware version 2023.20.6 or later.  Some older model S/X are not supported.
 
 ## Personalized Backends/Dispatchers
-Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry servers. They can be of any type, from distributed message queues to  STDOUT logger.  Here is a list of the currently supported [dispatchers](./telemetry/producer.go#L10-L19)::
-* Kafka (preferred): Configure with the config.json file.  See implementation here: [config/config.go](./config/config.go)
+Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry servers. They can be of any type, from distributed message queues to  STDOUT logger. In this fork, NATS is the production dispatcher; the other dispatchers remain supported for upstream parity. Here is a list of the currently supported [dispatchers](./telemetry/producer.go#L10-L19)::
+* Kafka: Configure with the config.json file.  See implementation here: [config/config.go](./config/config.go)
   * Topics will need to be created for \*prefix\*`_V`,\*prefix\*`_connectivity` and \*prefix\*`_alerts`. The default prefix is `tesla`
 * Kinesis: Configure with standard [AWS env variables and config files](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html). The default AWS credentials and config files are: `~/.aws/credentials` and `~/.aws/config`.
   * By default, stream names will be \*configured namespace\*_\*topic_name\*  ex.: `tesla_V`, `tesla_alerts`, etc
@@ -164,7 +165,7 @@ Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry s
 * ZMQ: Configure with the config.json file.  See implementation here: [config/config.go](./config/config.go)
 * MQTT: Configure using the config.json file. See implementation in [config/config.go](./config/config.go)
   * See detailed MQTT information in the [MQTT README](./datastore/mqtt/README.md)
-* NATS: Configure using the config.json file. Records publish to subjects named `namespace.vin.record_type`, with `V` normalized to `data`.
+* NATS (production path for this fork): Configure using the config.json file. Records publish to subjects named `namespace.vin.record_type`, with `V` normalized to `data`.
 * Logger: This is a simple STDOUT logger that serializes the protos to json.
 
 >NOTE: To add a new dispatcher, please provide integration tests and updated documentation. To serialize dispatcher data as json instead of protobufs, add a config `transmit_decoded_records` and set value to `true` as shown [here](config/test_configs_test.go#L186)
@@ -178,7 +179,7 @@ On the vehicle, Fleet Telemetry client behave similarly to how the connectivity 
   ```
     "records": {
         "connectivity": [
-            "kafka"
+            "nats"
         ]
       }
   ```
