@@ -494,15 +494,6 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 			// synchronously by the client (see nats.go's publish()), giving a
 			// deterministic way to exercise Produce's error path without ever
 			// closing the connection.
-			//
-			// NB: we deliberately never call Producer.Close() in this test file.
-			// datastore/nats/nats.go registers a ClosedHandler that panics
-			// unconditionally on any transition to the CLOSED state - including a
-			// graceful, intentional Close() (confirmed by reproducing it while
-			// developing this harness). cmd/main.go calls producer.Close() during
-			// server shutdown, so today that shutdown path panics instead of
-			// exiting cleanly; see the "known issue" callout in AGENTS.md. Fixing
-			// that is out of scope for this test-harness change.
 			limitedSrv := startNatsServer(&natsserver.Options{Port: -1, MaxPayload: 64})
 			defer func() {
 				limitedSrv.Shutdown()

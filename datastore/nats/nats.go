@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/nats-io/nats.go"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
@@ -56,6 +57,10 @@ type Producer struct {
 	airbrakeHandler    *airbrake.Handler
 	ackChan            chan (*telemetry.Record)
 	reliableAckTxTypes map[string]interface{}
+	// closing is set before Close() tears down natsConn, so the async
+	// ClosedHandler callback (see NewProducer) can tell an intentional,
+	// user-driven shutdown apart from a fatal, unrecoverable connection loss.
+	closing *atomic.Bool
 }
 
 // Metrics stores metrics reported from this package
@@ -84,12 +89,21 @@ type Config struct {
 func NewProducer(config *Config, namespace string, _ bool, metricsCollector metrics.MetricCollector, airbrakeHandler *airbrake.Handler, ackChan chan (*telemetry.Record), reliableAckTxTypes map[string]interface{}, logger *logrus.Logger) (telemetry.Producer, error) {
 	registerMetricsOnce(metricsCollector)
 
+	// Created before the connection so the ClosedHandler closure below can
+	// observe an intentional Producer.Close() no matter which goroutine that
+	// call races against - see the closing field's doc comment.
+	closing := &atomic.Bool{}
+
 	natsConn, err := NatsConnect(
 		config.URL,
 		nats.Name(config.Name),
 		nats.RetryOnFailedConnect(true),
 		nats.MaxReconnects(-1),
 		nats.ClosedHandler(func(conn *nats.Conn) {
+			if closing.Load() {
+				logger.ActivityLog("nats_closed", logrus.LogInfo{"message": "NATS connection closed"})
+				return
+			}
 			logger.ErrorLog("nats_closed", conn.LastError(), logrus.LogInfo{"message": "NATS closed with error, shutting down server"})
 			panic(fmt.Sprintf("NATS disconnected with error: %v", conn.LastError()))
 		}),
@@ -118,6 +132,7 @@ func NewProducer(config *Config, namespace string, _ bool, metricsCollector metr
 		airbrakeHandler:    airbrakeHandler,
 		ackChan:            ackChan,
 		reliableAckTxTypes: reliableAckTxTypes,
+		closing:            closing,
 	}
 
 	producer.logger.ActivityLog("nats_registered", logrus.LogInfo{"namespace": namespace})
@@ -179,8 +194,10 @@ func (p *Producer) Produce(entry *telemetry.Record) {
 	metricsRegistry.bytesTotal.Add(int64(entry.Length()), map[string]string{"record_type": entry.TxType})
 }
 
-// Close the producer
+// Close intentionally closes the producer without treating the NATS CLOSED
+// callback as a fatal connection loss.
 func (p *Producer) Close() error {
+	p.closing.Store(true)
 	p.natsConn.Close()
 	return nil
 }
