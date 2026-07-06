@@ -1,6 +1,5 @@
-[![Build and Test](https://github.com/teslamotors/fleet-telemetry/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/teslamotors/fleet-telemetry/actions/workflows/build.yml)
-[![Current Version](https://img.shields.io/github/v/tag/teslamotors/fleet-telemetry?label=latest%20tag)](https://github.com/teslamotors/fleet-telemetry/tags)
-[![DockerHub Tags](https://img.shields.io/docker/v/tesla/fleet-telemetry?label=docker%20tags)](https://hub.docker.com/r/tesla/fleet-telemetry/tags)
+[![Build and Test](https://github.com/Teslemetry/tesla-fleet-telemetry/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Teslemetry/tesla-fleet-telemetry/actions/workflows/build.yml)
+[![Current Version](https://img.shields.io/github/v/tag/Teslemetry/tesla-fleet-telemetry?label=latest%20tag)](https://github.com/Teslemetry/tesla-fleet-telemetry/tags)
 
 # Tesla Fleet Telemetry
 ---------------------------------
@@ -109,7 +108,7 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
 ```
 Example: [server_config.json](./examples/server_config.json)
 
-5. (Manual install only) Deploy and run the server. Get the latest docker image information from our [docker hub](https://hub.docker.com/r/tesla/fleet-telemetry/tags). This can be run as a binary via `./fleet-telemetry -config=/etc/fleet-telemetry/config.json` directly on a server, or as a Kubernetes deployment. Example snippet:
+5. (Manual install only) Deploy and run the server. Production releases are published as `linux-amd64` binaries and checksums on the [GitHub releases page](https://github.com/Teslemetry/tesla-fleet-telemetry/releases). Run the binary via `./fleet-telemetry -config=/etc/fleet-telemetry/config.json` directly on a server. If deploying as a container, build and publish an image to your own registry. Example Kubernetes snippet:
 ```yaml
 ---
 apiVersion: apps/v1
@@ -128,7 +127,7 @@ spec:
     spec:
       containers:
       - name: fleet-telemetry
-        image: tesla/fleet-telemetry:<tag>
+        image: <registry>/fleet-telemetry:<tag>
         command: ["/fleet-telemetry", "-config=/etc/fleet-telemetry/config.json"]
         ports:
         - containerPort: 443

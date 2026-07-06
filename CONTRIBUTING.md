@@ -25,7 +25,7 @@ We will accept contributions from anybody assuming they respect our policies and
 If you've found something in the code that should be updated, search open issues to see if someone else has reported the same thing. If it's something new, open an issue. We'll use the issue to have a conversation about the problem you are having or want to fix.
 
 #### :hammer_and_wrench: Pull requests
-A [pull request](https://docs.github.com/en/github/collaborating-with-issues-and-pull-requests/about-pull-requests) is a way to suggest changes in our repository. When we merge those changes, it will kick of a new build. Currently we will manually push the update to docker to ensure a good understanding of release should be a major, minor or patch. We might automate this process in the future.
+A [pull request](https://docs.github.com/en/github/collaborating-with-issues-and-pull-requests/about-pull-requests) is a way to suggest changes in our repository. When we merge those changes, it will kick off a new build. Releases are cut manually with `gh release create` on `main`; that release event builds and attaches the `linux-amd64` binary and checksum assets.
 
 
 #### :question: Support
@@ -90,4 +90,4 @@ Once you submit your PR, a Docs team member will review your proposal. We may as
 
 ### Your PR is merged!
 
-Once your PR is merged, your contributions will be publicly visible on the [Fleet Telemetry Github](https://github.com/teslamotors/fleet-telemetry). It will be published in a future [release](https://github.com/teslamotors/fleet-telemetry/releases).
+Once your PR is merged, your contributions will be publicly visible on the [Fleet Telemetry Github](https://github.com/Teslemetry/tesla-fleet-telemetry). It will be published in a future [release](https://github.com/Teslemetry/tesla-fleet-telemetry/releases).
