@@ -53,6 +53,10 @@ Scan through our [existing issues](https://github.com/teslamotors/fleet-telemetr
 
 ### Make Changes
 
+#### Code comments
+
+Code comments should explain the constraint, trade-off, or invariant a reader needs. Keep history, investigation notes, incident context, and PR numbers in the PR body instead.
+
 #### Make changes in the UI
 
 Click **Make a contribution** at the bottom of any docs page to make small changes such as a typo, sentence fix, or a broken link. This takes you to the `.md` file where you can make your changes and [create a pull request](#pull-request) for a review.
