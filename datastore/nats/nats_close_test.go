@@ -24,14 +24,13 @@ import (
 // goroutine that called Close(). A panic there is a panic in a goroutine this
 // test can't recover from with a plain defer/recover - it crashes the whole
 // `go test` process, taking the entire Ginkgo suite in this package down with
-// it. Running the repro in a subprocess contains the crash (if the bug
-// regresses) to that subprocess's own non-zero exit instead.
+// it. Running the repro in a subprocess contains a panic to that subprocess's
+// own non-zero exit instead.
 const closeSubprocessEnvVar = "FLEET_TELEMETRY_NATS_CLOSE_SUBPROCESS"
 
-// TestProducerCloseDoesNotPanic is a regression test for a bug where
-// datastore/nats's ClosedHandler unconditionally panicked whenever the
-// underlying *nats.Conn transitioned to CLOSED - including a clean,
-// intentional Producer.Close() call (see the NATS section of AGENTS.md).
+// TestProducerCloseDoesNotPanic verifies that a clean, intentional
+// Producer.Close() never reaches ClosedHandler's panic path, which exists
+// only to catch unexpected CLOSED transitions on the underlying *nats.Conn.
 func TestProducerCloseDoesNotPanic(t *testing.T) {
 	if os.Getenv(closeSubprocessEnvVar) == "1" {
 		runCloseSubprocessBody(t)
@@ -67,7 +66,6 @@ func runCloseSubprocessBody(t *testing.T) {
 	}
 
 	// The ClosedHandler callback runs asynchronously; give it time to fire
-	// before the subprocess exits so an unfixed regression is observed here
-	// rather than racing process teardown.
+	// before the subprocess exits rather than racing process teardown.
 	time.Sleep(200 * time.Millisecond)
 }

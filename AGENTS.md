@@ -8,6 +8,10 @@ Tesla Fleet Telemetry is a Go server reference implementation for Tesla's teleme
 
 This is **Teslemetry's fork** of `teslamotors/fleet-telemetry`. The valuable knowledge here is fork-specific: how we cut releases, and where we diverge from upstream. NATS is the **only dispatcher we run in production** - the others exist for upstream parity. Changes that would conflict with a future `teslamotors/main` merge are worth flagging in the PR description so a human can weigh the tradeoff.
 
+## Conventions
+
+- Code comments explain the WHY in isolation, concisely: the constraint, trade-off, or invariant a reader needs. History narration and investigation/incident/PR-number context belong in the PR body, never in the code.
+
 ## Build, Test & Toolchain
 
 ```bash
