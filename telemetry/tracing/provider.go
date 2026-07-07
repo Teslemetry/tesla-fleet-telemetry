@@ -16,8 +16,8 @@ import (
 )
 
 // defaultTraceSampleRate is used when config leaves TraceSampleRate unset (<=0).
-// The NATS producer now emits a PRODUCER span per publish (~5.5M spans/day
-// fleet-wide at ratio 1.0) so the default is a head sample, not "trace
+// The NATS producer emits a PRODUCER span per publish (~5.5M spans/day
+// fleet-wide at ratio 1.0), so the default is a head sample, not "trace
 // everything" - set trace_sample_rate explicitly to override.
 const defaultTraceSampleRate = 0.01
 

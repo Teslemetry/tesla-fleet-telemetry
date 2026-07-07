@@ -36,8 +36,7 @@ import (
 
 // This file exercises the NATS producer end-to-end against a real, in-process
 // NATS server (github.com/nats-io/nats-server/v2, embedded - no Docker/network
-// dependency) rather than mocks. See AGENTS.md for why this shape was chosen
-// over the docker-compose harness used by test/integration.
+// dependency) rather than mocks, so it runs as part of plain `make test`.
 
 const traceparentRegexp = `^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$`
 
@@ -366,32 +365,20 @@ var _ = Describe("NATS producer against a real embedded server", func() {
 			// The restarted server below is a brand-new *server.Server with no
 			// memory of who was subscribed - core NATS (no JetStream, no
 			// durability) only routes a publish to subscribers already
-			// registered on the broker at the moment it's processed. So once
-			// both subConn and the producer race to reconnect independently,
-			// *whichever wins* decides the outcome: if the producer's buffered
-			// publish reaches the new server before subConn has resubscribed,
-			// it is delivered to no one and silently dropped - not a client bug,
-			// just at-most-once pub/sub semantics. That race, not raw reconnect
-			// latency, is what made this spec CI-timing-sensitive: it usually
-			// resolved in the subscriber's favor locally, but had no ordering
-			// guarantee, so a slower or differently-scheduled CI runner could
-			// flip it. Confirmed by instrumenting both connections' reconnect
-			// order in a standalone repro: delivery failed in every run where
-			// the producer's ReconnectHandler fired before the subscriber's.
-			//
-			// Fix: take the ordering out of the scheduler's hands entirely.
-			// Give the producer's connection an effectively-infinite
-			// ReconnectWait (so it parks in RECONNECTING and never attempts a
-			// reconnect on its own timeline) and capture the underlying
-			// *nats.Conn via the fleetnats.NatsConnect seam (same injection
-			// pattern the "wrong credentials" spec below already uses). Later,
-			// once a probe message has round-tripped through subConn on the
-			// restarted server - proving its subscription is actually
-			// registered there, not just that its TCP handshake completed -
-			// explicitly call producerConn.ForceReconnect() to let it reconnect
-			// and flush the buffered publish. This guarantees the subscriber is
-			// ready before the message can possibly be sent, rather than hoping
-			// a generous timeout keeps happening to work out.
+			// registered on the broker at the moment it's processed. If the
+			// producer's buffered publish reaches the new server before subConn
+			// has resubscribed, it is silently dropped: at-most-once pub/sub
+			// semantics, not a client bug. To make delivery deterministic
+			// instead of racing reconnect timing: give the producer's
+			// connection an effectively-infinite ReconnectWait (so it parks in
+			// RECONNECTING and never reconnects on its own timeline) via the
+			// fleetnats.NatsConnect seam (same injection pattern the "wrong
+			// credentials" spec below uses), wait for a probe message to
+			// round-trip through subConn on the restarted server (proving its
+			// subscription is actually registered, not just that its TCP
+			// handshake completed), then explicitly call
+			// producerConn.ForceReconnect() so the flush only happens once the
+			// subscriber is provably ready.
 			var producerConn *natsclient.Conn
 			originalNatsConnect := fleetnats.NatsConnect
 			fleetnats.NatsConnect = func(url string, opts ...natsclient.Option) (*natsclient.Conn, error) {
