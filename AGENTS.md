@@ -30,12 +30,12 @@ go test -cover ./config                # coverage
 
 Run `make format && make linters && make test` after every change - this mirrors the `build` CI job.
 
-**Toolchain:** `go.mod` requires `go 1.24.0`. Sandboxes/CI images may ship an older system Go (e.g. `go1.19`, which can't even parse the `go 1.24.0` directive - toolchain auto-switch didn't exist before 1.21). If `go build` fails with `invalid go version`, install a matching toolchain rather than assuming the repo is broken:
+**Toolchain:** `go.mod` requires `go 1.26.0`. Sandboxes/CI images may ship an older system Go (e.g. `go1.19`, which can't even parse the `go 1.26.0` directive - toolchain auto-switch didn't exist before 1.21). If `go build` fails with `invalid go version`, install a matching toolchain rather than assuming the repo is broken:
 ```bash
-curl -sL https://go.dev/dl/go1.24.0.linux-amd64.tar.gz | tar -C /tmp/goroot -xzf -
+curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /tmp/goroot -xzf -
 export PATH=/tmp/goroot/go/bin:$PATH
 ```
-`golangci-lint` isn't preinstalled; CI pins `v1.64.8` - `go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8`.
+`golangci-lint` isn't preinstalled; CI pins `v2.12.2` - `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`. Config is v2 format (`.golangci.yml` starts with `version: "2"`).
 
 **macOS deps:** `brew install librdkafka pkg-config libsodium zmq`. On libcrypto errors, add your OpenSSL pkgconfig dir to `PKG_CONFIG_PATH`.
 
@@ -103,7 +103,7 @@ Sharp edges in the integration/backend setup:
 
 ## NATS test harness (`datastore/nats/`)
 
-`datastore/nats` is our only production dispatcher, covered end-to-end by an **in-process embedded NATS server** (`nats-io/nats-server/v2`, test-only) rather than docker-compose - so it runs in plain `make test` with no Docker, in ~2-4s. Pinned to `v2.10.29`, the newest tag still supporting `go 1.24.0` (newer tags need `go >= 1.25`); don't bump it opportunistically.
+`datastore/nats` is our only production dispatcher, covered end-to-end by an **in-process embedded NATS server** (`nats-io/nats-server/v2`, test-only) rather than docker-compose - so it runs in plain `make test` with no Docker, in ~2-4s. Pinned to `v2.10.29` (originally the newest tag supporting the fork's then-`go 1.24.0` floor, now stale since go.mod moved to `go 1.26.0`); don't bump it opportunistically outside a dedicated change.
 
 - **Build `*telemetry.Record`s the real way:** `messages.StreamMessage{...}.ToBytes()` → `telemetry.NewRecord(...)`, as `datastore/mqtt/mqtt_test.go` does. This exercises the real decode + `applyRecordTransforms` path (VIN stamping/warning); don't hand-construct a `Record`. `BinarySerializer.Deserialize` skips the sender-ID check when `DispatchRules[txType]` is populated, so tests only need that entry, not an exact `SenderID`.
 - **Clean `Producer.Close()` must not panic.** `NatsConnect`'s `ClosedHandler` panics on an unexpected CLOSED transition, but `Close()` sets an `*atomic.Bool` `closing` field *before* tearing down `natsConn`, so the handler only panics on a genuinely unexpected close. The flag is written synchronously before the underlying `nats.Conn.Close()`, so it's correct regardless of callback races. Regression covered by `nats_close_test.go` in a **subprocess** (a panic in nats.go's async callback goroutine can't be `recover()`-ed and would crash the whole test binary).
