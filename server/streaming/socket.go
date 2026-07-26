@@ -91,6 +91,9 @@ func NewSocketManager(ctx context.Context, requestIdentity *telemetry.RequestIde
 	registerMetricsOnce(config.MetricCollector)
 
 	requestLogInfo, socketUUID := buildRequestContext(ctx)
+	// requestIdentity.DeviceID is the TLS-cert-authenticated VIN (see extractIdentityFromConnection),
+	// already resolved before the socket exists - no per-event lookup needed.
+	requestLogInfo["vin"] = requestIdentity.DeviceID
 
 	return &SocketManager{
 		Ws:           ws,
@@ -233,6 +236,7 @@ func (sm *SocketManager) Close() {
 
 	socketMetrics := sm.RecordsStatsToLogInfo()
 	socketMetrics["duration_sec"] = int(time.Since(sm.StartTime) / time.Second) // Result is in nanosecond, converting it to seconds
+	socketMetrics["vin"] = sm.requestIdentity.DeviceID
 	sm.closeReasonMu.Lock()
 	if sm.closeReason != "" {
 		socketMetrics["close_reason"] = sm.closeReason

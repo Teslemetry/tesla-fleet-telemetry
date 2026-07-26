@@ -193,4 +193,55 @@ var _ = Describe("Socket handler test", func() {
 		Eventually(spy.captured).Should(Receive(&record))
 		Expect(record.Vin).To(Equal("device-1"))
 	})
+
+	It("socket_connected and socket_disconnected activity logs carry the vin", func() {
+		logger, hook := logrus.NoOpLogger()
+
+		conf := &config.Config{
+			RateLimit: &config.RateLimit{
+				MessageLimit:              1,
+				MessageIntervalTimeSecond: 1 * time.Second,
+			},
+			MetricCollector: noop.NewCollector(),
+		}
+
+		registry := streaming.NewSocketRegistry()
+		producerRules = make(map[string][]telemetry.Producer)
+		_, s, err := streaming.InitServer(conf, airbrake.NewAirbrakeHandler(nil), producerRules, logger, registry)
+		Expect(err).NotTo(HaveOccurred())
+
+		realCert := makeCert("device-1", "TeslaMotors")
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{realCert},
+			VerifiedChains:   [][]*x509.Certificate{{realCert}},
+		}
+		srv := httptest.NewServer(withTLSState(http.HandlerFunc(s.ServeBinaryWs(conf)), tlsState))
+		defer srv.Close()
+		u, _ := url.Parse(srv.URL)
+		u.Scheme = "ws"
+
+		dialer := &websocket.Dialer{HandshakeTimeout: 1 * time.Second}
+		conn, _, err := dialer.Dial(u.String(), nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		findEntry := func(message string) *logrus.LogInfo {
+			for _, entry := range hook.AllEntries() {
+				if entry.Message == message {
+					data := logrus.LogInfo(entry.Data)
+					return &data
+				}
+			}
+			return nil
+		}
+
+		Eventually(func() *logrus.LogInfo { return findEntry("socket_connected") }).ShouldNot(BeNil())
+		connected := findEntry("socket_connected")
+		Expect((*connected)["vin"]).To(Equal("device-1"))
+
+		_ = conn.Close()
+
+		Eventually(func() *logrus.LogInfo { return findEntry("socket_disconnected") }).ShouldNot(BeNil())
+		disconnected := findEntry("socket_disconnected")
+		Expect((*disconnected)["vin"]).To(Equal("device-1"))
+	})
 })
