@@ -1,30 +1,36 @@
 name: Build and Release Binary
 
+# workflow_dispatch on an exact commit is the only way to cut a release: a
+# human tagging/publishing a GitHub Release directly would skip the gate and
+# approval below, so there is deliberately no `release: created` trigger.
 on:
-  release:
-    types: [created]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to build and release"
+      version:
+        description: "Release version, e.g. v1.3.3"
+        required: true
+        type: string
+      sha:
+        description: "Exact commit SHA to release"
         required: true
         type: string
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.23.0
+          go-version: 1.26.x
 
       - name: Set up protoc
         run: |
@@ -36,20 +42,29 @@ jobs:
       - name: Install protoc-gen-go
         run: go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1
 
-      - name: Generate protobuf files
-        run: make generate-protos
+      - name: Generated protofiles are up to date
+        run: |
+          make generate-protos
+          git diff --exit-code
+
+      - name: No formatting changes
+        run: |
+          make format
+          git diff --exit-code
 
       - name: Install ZMQ dependencies
         run: sudo apt update -y && sudo apt upgrade -y && sudo apt install libsodium-dev libzmq3-dev
 
-      - name: Get version
-        id: get_version
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "VERSION=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
+      - name: Setup golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+
+      - name: Linter passes
+        run: make linters
+
+      - name: Test
+        run: make test
 
       - name: Build binary for Linux AMD64
         env:
@@ -62,40 +77,101 @@ jobs:
 
       - name: Create tarball
         run: |
-          tar -czf fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz fleet-telemetry-linux-amd64
+          tar -czf fleet-telemetry-${{ inputs.version }}-linux-amd64.tar.gz fleet-telemetry-linux-amd64
 
       - name: Generate checksums
+        id: checksum
         run: |
-          sha256sum fleet-telemetry-linux-amd64 > fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
-          sha256sum fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz >> fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+          sha256sum fleet-telemetry-linux-amd64 > fleet-telemetry-${{ inputs.version }}-linux-amd64.sha256
+          sha256sum fleet-telemetry-${{ inputs.version }}-linux-amd64.tar.gz >> fleet-telemetry-${{ inputs.version }}-linux-amd64.sha256
+          echo "binary_sha256=$(sha256sum fleet-telemetry-linux-amd64 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload binary to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
+          tag_name: ${{ inputs.version }}
+          target_commitish: ${{ inputs.sha }}
           files: |
             fleet-telemetry-linux-amd64
-            fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz
-            fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+            fleet-telemetry-${{ inputs.version }}-linux-amd64.tar.gz
+            fleet-telemetry-${{ inputs.version }}-linux-amd64.sha256
           body: |
-            ## Fleet Telemetry ${{ steps.get_version.outputs.VERSION }}
+            ## Fleet Telemetry ${{ inputs.version }}
+
+            Built and tested from commit `${{ inputs.sha }}`.
 
             ### Downloads
             - **Binary**: `fleet-telemetry-linux-amd64`
-            - **Archive**: `fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.tar.gz`
-            - **Checksums**: `fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256`
+            - **Archive**: `fleet-telemetry-${{ inputs.version }}-linux-amd64.tar.gz`
+            - **Checksums**: `fleet-telemetry-${{ inputs.version }}-linux-amd64.sha256`
 
             ### Installation
             ```bash
             # Download the binary
-            wget https://github.com/teslamotors/fleet-telemetry/releases/download/${{ steps.get_version.outputs.VERSION }}/fleet-telemetry-linux-amd64
+            wget https://github.com/teslamotors/fleet-telemetry/releases/download/${{ inputs.version }}/fleet-telemetry-linux-amd64
 
             # Make it executable
             chmod +x fleet-telemetry-linux-amd64
 
             # Verify checksum
-            wget https://github.com/teslamotors/fleet-telemetry/releases/download/${{ steps.get_version.outputs.VERSION }}/fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
-            sha256sum -c fleet-telemetry-${{ steps.get_version.outputs.VERSION }}-linux-amd64.sha256
+            wget https://github.com/teslamotors/fleet-telemetry/releases/download/${{ inputs.version }}/fleet-telemetry-${{ inputs.version }}-linux-amd64.sha256
+            sha256sum -c fleet-telemetry-${{ inputs.version }}-linux-amd64.sha256
             ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Keeps the binary cut and the host pin traceably connected without
+      # merging deploy timing into this workflow: the servers PR still goes
+      # through its own review/ask-first deploy window.
+      - name: Prepare servers pin-bump
+        id: servers_pin
+        env:
+          VERSION: ${{ inputs.version }}
+          SHA256: ${{ steps.checksum.outputs.binary_sha256 }}
+          SERVERS_TOKEN: ${{ secrets.SERVERS_REPO_TOKEN }}
+        run: |
+          PLAIN_VERSION="${VERSION#v}"
+          {
+            echo "fleet_telemetry_version: ${PLAIN_VERSION}"
+            echo "fleet_telemetry_sha256: ${SHA256}"
+          } > servers-pin-bump.txt
+          if [ -z "$SERVERS_TOKEN" ]; then
+            echo "opened=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### servers pin-bump PR was NOT opened automatically"
+              echo ""
+              echo "No \`SERVERS_REPO_TOKEN\` secret is configured on this repo, so this workflow cannot open a PR in \`Teslemetry/servers\`."
+              echo "A repo admin needs to add a fine-grained PAT (or GitHub App token) scoped to \`Teslemetry/servers\` contents:write + pull-requests:write as the \`SERVERS_REPO_TOKEN\` secret here."
+              echo ""
+              echo "Until then, apply this change by hand in \`roles/fleet_telemetry/defaults/main.yaml\`:"
+              echo '```'
+              cat servers-pin-bump.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "opened=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open servers pin-bump PR
+        if: steps.servers_pin.outputs.opened == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SERVERS_REPO_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          SHA256: ${{ steps.checksum.outputs.binary_sha256 }}
+        run: |
+          PLAIN_VERSION="${VERSION#v}"
+          BRANCH="fleet-telemetry-pin-${PLAIN_VERSION}"
+          gh repo clone Teslemetry/servers servers-repo -- --depth=1
+          cd servers-repo
+          git checkout -b "$BRANCH"
+          sed -i -E "s/^fleet_telemetry_version: .*/fleet_telemetry_version: ${PLAIN_VERSION}/" roles/fleet_telemetry/defaults/main.yaml
+          sed -i -E "s/^fleet_telemetry_sha256: .*/fleet_telemetry_sha256: ${SHA256}/" roles/fleet_telemetry/defaults/main.yaml
+          git config user.name "fleet-telemetry-release-bot"
+          git config user.email "actions@github.com"
+          git add roles/fleet_telemetry/defaults/main.yaml
+          git commit -m "fleet_telemetry: pin ${PLAIN_VERSION}"
+          git push origin "$BRANCH"
+          gh pr create -R Teslemetry/servers \
+            --title "fleet_telemetry: pin ${PLAIN_VERSION}" \
+            --body "Bumps the pinned fleet-telemetry release consumed by the ansible role to \`${PLAIN_VERSION}\`, built and approved from https://github.com/Teslemetry/tesla-fleet-telemetry/releases/tag/${VERSION}. Deployment still goes through the normal ask-first window." \
+            --head "$BRANCH"
