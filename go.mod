@@ -9,6 +9,7 @@ require (
 	github.com/beefsack/go-rate v0.0.0-20220214233405-116f4ca011a0
 	github.com/confluentinc/confluent-kafka-go/v2 v2.3.0
 	github.com/eclipse/paho.mqtt.golang v1.5.0
+	github.com/fsnotify/fsnotify v1.7.0
 	github.com/google/flatbuffers v23.3.3+incompatible
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3

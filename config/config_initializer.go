@@ -37,6 +37,7 @@ func LoadApplicationConfiguration() (config *Config, logger *logrus.Logger, shut
 
 	config.configureLogger(logger)
 	config.configureMetricsCollector(logger)
+	config.configureDataConnector(logger)
 
 	// Configure OTel logging if enabled
 	if otelLogShutdown := config.ConfigureOTelLogging(logger); otelLogShutdown != nil {

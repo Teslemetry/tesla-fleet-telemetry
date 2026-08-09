@@ -18,6 +18,7 @@ import (
 	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 	githublogrus "github.com/sirupsen/logrus"
 
+	"github.com/teslamotors/fleet-telemetry/connector"
 	"github.com/teslamotors/fleet-telemetry/datastore/googlepubsub"
 	"github.com/teslamotors/fleet-telemetry/datastore/kafka"
 	"github.com/teslamotors/fleet-telemetry/datastore/kinesis"
@@ -111,6 +112,13 @@ type Config struct {
 
 	// NATS config
 	NATS *nats.Config `json:"nats,omitempty"`
+
+	// DataConnectorConfig configures data connectors used to enhance server functionality,
+	// e.g. checking whether a VIN is allowed to connect
+	DataConnectorConfig connector.Config `json:"data_connectors,omitempty"`
+
+	// DataConnector manages accessing supplemental data from external sources
+	DataConnector *connector.ConnectorProvider
 }
 
 // Airbrake config
@@ -263,6 +271,10 @@ func (c *Config) configureLogger(logger *logrus.Logger) {
 
 func (c *Config) configureMetricsCollector(logger *logrus.Logger) {
 	c.MetricCollector = metrics.NewCollector(c.Monitoring, logger)
+}
+
+func (c *Config) configureDataConnector(logger *logrus.Logger) {
+	c.DataConnector = connector.NewConnectorProvider(c.DataConnectorConfig, c.MetricCollector, logger)
 }
 
 // ConfigureOTelLogging sets up the OpenTelemetry logging hook if enabled
