@@ -43,12 +43,16 @@ responder, using its own dedicated NATS connection (independent of whether NATS 
 configured as a record dispatcher under the top-level `nats` config block).
 
 For `vin_allowed`, the connector publishes a request on subject `vin_allowed` with body
-`{"vin":"<vin>"}` and expects a reply `{"allowed":true|false}` within 1 second. Any
-failure to get a well-formed reply in time - no responder, a timeout, or a malformed
-body - **fails open**: the vehicle is admitted, a `nats_connector_vin_allowed_fail_open`
-error is logged, and the `data_connector_nats_fail_open_count` metric is incremented.
-Customer telemetry availability outranks enforcement latency here, and cleaning up an
-already-admitted, disallowed vehicle is best-effort.
+`{"vin":"<vin>"}` and expects a reply `{"allowed":true|false}` within 1 second. The
+request carries a fabricated W3C `traceparent` header (this connector runs with no OTel
+tracer of its own) so an OTel-instrumented responder joins the check into one trace
+instead of starting a disconnected root; the fail-open log includes the same trace id
+for pivoting from an FT log line to that trace. Any failure to get a well-formed reply
+in time - no responder, a timeout, or a malformed body - **fails open**: the vehicle is
+admitted, a `nats_connector_vin_allowed_fail_open` error is logged, and the
+`data_connector_nats_fail_open_count` metric is incremented. Customer telemetry
+availability outranks enforcement latency here, and cleaning up an already-admitted,
+disallowed vehicle is best-effort.
 
 - `capabilities`: `[]string` capabilities to use the data connector for.
 - `url`: `string` NATS server URL.

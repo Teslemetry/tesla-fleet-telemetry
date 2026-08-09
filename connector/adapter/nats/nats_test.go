@@ -1,6 +1,7 @@
 package nats_test
 
 import (
+	"regexp"
 	"time"
 
 	natsclient "github.com/nats-io/nats.go"
@@ -43,6 +44,23 @@ func respondOnce(nc *natsclient.Conn, body []byte) {
 	DeferCleanup(func() { _ = sub.Unsubscribe() })
 }
 
+// respondOnceCapturing behaves like respondOnce but also hands the received
+// request back over the returned channel, so a test can inspect its headers.
+func respondOnceCapturing(nc *natsclient.Conn, body []byte) <-chan *natsclient.Msg {
+	received := make(chan *natsclient.Msg, 1)
+	sub, err := nc.Subscribe("vin_allowed", func(msg *natsclient.Msg) {
+		received <- msg
+		Expect(msg.Respond(body)).To(Succeed())
+	})
+	Expect(err).NotTo(HaveOccurred())
+	DeferCleanup(func() { _ = sub.Unsubscribe() })
+	return received
+}
+
+// traceparentPattern matches a well-formed W3C traceparent: version "00", a
+// 32-hex-digit trace id, a 16-hex-digit span id, and trailing flags.
+var traceparentPattern = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
+
 var _ = Describe("Connector", func() {
 	var (
 		server        *natsserver.Server
@@ -79,6 +97,18 @@ var _ = Describe("Connector", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(allowed).To(BeTrue())
 		})
+
+		It("carries a well-formed W3C traceparent header on the request", func() {
+			received := respondOnceCapturing(responderConn, []byte(`{"allowed":true}`))
+
+			_, err := newConnector().VinAllowed("VIN1")
+			Expect(err).NotTo(HaveOccurred())
+
+			var req *natsclient.Msg
+			Eventually(received).Should(Receive(&req))
+			traceparent := req.Header.Get("traceparent")
+			Expect(traceparentPattern.MatchString(traceparent)).To(BeTrue(), "got %q", traceparent)
+		})
 	})
 
 	Context("with a responder that denies the vin", func() {
@@ -100,6 +130,10 @@ var _ = Describe("Connector", func() {
 			entry := findLogEntry(hook, "nats_connector_vin_allowed_fail_open")
 			Expect(entry).NotTo(BeNil())
 			Expect(entry.Data["vin"]).To(Equal("VIN1"))
+
+			traceID, ok := entry.Data["trace_id"].(string)
+			Expect(ok).To(BeTrue())
+			Expect(traceID).To(MatchRegexp(`^[0-9a-f]{32}$`))
 		})
 	})
 

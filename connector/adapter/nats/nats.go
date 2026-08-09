@@ -4,7 +4,10 @@
 package nats
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -18,6 +21,10 @@ import (
 // vinAllowedSubject is the pinned wire contract's request subject: JSON body
 // {"vin":"<vin>"}, JSON reply {"allowed":true|false}.
 const vinAllowedSubject = "vin_allowed"
+
+// traceparentHeader is the W3C trace-context header the api side's shared
+// NATS otel helpers (nats-otel.ts) extract by name, case-insensitively.
+const traceparentHeader = "traceparent"
 
 // VinAllowedTimeout bounds the request-reply round trip so a slow or absent
 // responder never blocks a vehicle's websocket accept path. Overridable (var,
@@ -95,29 +102,56 @@ func NewConnector(config Config, metricsCollector metrics.MetricCollector, logge
 func (c *Connector) VinAllowed(vin string) (bool, error) {
 	serverMetricsRegistry.requestCount.Inc(nil)
 
+	traceID, traceparent := newTraceparent()
+
 	payload, err := json.Marshal(vinAllowedRequest{Vin: vin})
 	if err != nil {
-		return c.failOpen(vin, err), err
+		return c.failOpen(vin, traceID, err), err
 	}
 
-	msg, err := c.conn.Request(vinAllowedSubject, payload, VinAllowedTimeout)
+	req := nats.NewMsg(vinAllowedSubject)
+	req.Data = payload
+	if traceparent != "" {
+		req.Header.Set(traceparentHeader, traceparent)
+	}
+
+	resp, err := c.conn.RequestMsg(req, VinAllowedTimeout)
 	if err != nil {
-		return c.failOpen(vin, err), err
+		return c.failOpen(vin, traceID, err), err
 	}
 
 	var reply vinAllowedResponse
-	if err := json.Unmarshal(msg.Data, &reply); err != nil {
-		return c.failOpen(vin, err), err
+	if err := json.Unmarshal(resp.Data, &reply); err != nil {
+		return c.failOpen(vin, traceID, err), err
 	}
 
 	return reply.Allowed, nil
 }
 
-func (c *Connector) failOpen(vin string, err error) bool {
+func (c *Connector) failOpen(vin, traceID string, err error) bool {
 	serverMetricsRegistry.requestErrorCount.Inc(nil)
 	serverMetricsRegistry.failOpenCount.Inc(nil)
-	c.logger.ErrorLog("nats_connector_vin_allowed_fail_open", err, logrus.LogInfo{"vin": vin})
+	c.logger.ErrorLog("nats_connector_vin_allowed_fail_open", err, logrus.LogInfo{"vin": vin, "trace_id": traceID})
 	return true
+}
+
+// newTraceparent generates a W3C traceparent header value (version "00",
+// sampled flag set) for a fresh root trace. This connector runs with no OTel
+// tracer configured, so it fabricates the header directly rather than pulling
+// in the OTel SDK for one field; it still lets the api-side responder (which
+// extracts real OTel context from this same header) join the request-reply
+// into one trace instead of starting disconnected.
+func newTraceparent() (traceID, traceparent string) {
+	var tid [16]byte
+	var sid [8]byte
+	if _, err := rand.Read(tid[:]); err != nil {
+		return "", ""
+	}
+	if _, err := rand.Read(sid[:]); err != nil {
+		return "", ""
+	}
+	traceID = hex.EncodeToString(tid[:])
+	return traceID, fmt.Sprintf("00-%s-%s-01", traceID, hex.EncodeToString(sid[:]))
 }
 
 // Close tears down the connector's NATS connection.
