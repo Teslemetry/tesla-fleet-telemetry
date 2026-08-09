@@ -50,6 +50,7 @@ Vehicles (WebSocket/TLS) → server/streaming → telemetry/record → datastore
 - **server/streaming/**: WebSocket server and per-vehicle connections (`socket.go`).
 - **telemetry/**: core types - `Producer` interface, `Record`, serialization.
 - **datastore/**: dispatcher implementations (kafka, kinesis, googlepubsub, mqtt, nats, zmq, simple).
+- **connector/**: pluggable data connectors that gate a vehicle's connection (e.g. `vin_allowed`) - see "Data connectors" below.
 - **messages/**: Flatbuffers schemas, identity handling.
 - **protos/**: Protocol Buffer definitions for vehicle data types.
 - **metrics/**: Prometheus and StatsD adapters.
@@ -101,6 +102,14 @@ Sharp edges in the integration/backend setup:
 
 `telemetry.Record.applyProtoRecordTransforms` always overwrites a payload's claimed `Vin` with the connection-authenticated `record.Vin` (all four record arms do `message.Vin = record.Vin`) - a silent correction, not a drop. The `connectivity` arm additionally calls `record.logVinMismatch(...)` to emit a `WARN "unexpected_vin"` (fields: `socket_id`, `txid`, `record_type`, `claimed_vin`, `connection_vin`) when a non-empty claimed VIN differs from the authenticated one - so a future decision to actually drop spoofed messages can be backed by real data. Rate-capped to once per connection via `BinarySerializer.ShouldLogVinMismatch()` (an `atomic.Bool` on the per-connection serializer). If extended to the `V`/`alerts`/`errors` arms, reuse the same helper and per-connection cap.
 
+## Data connectors (`connector/`)
+
+Pluggable checks gate a vehicle's websocket accept in `server/streaming/server.go`'s `isConnectionAllowed` - currently just the `vin_allowed` capability. Default off: with no `data_connectors` config block (or a hand-built `config.Config` with `DataConnector` left nil, as in most `server/streaming` tests), every VIN is admitted. Config surface and behavior are documented in `connector/README.md`.
+
+Adapters: `file` (watches a JSON allowlist) and `nats` (request-reply over its own dedicated NATS connection - not `datastore/nats`'s publish-producer connection, since that one only exists when NATS is configured as a record dispatcher, and its `natsConn` field is unexported anyway). The NATS adapter's wire contract - subject `vin_allowed`, JSON request `{"vin":...}`, JSON reply `{"allowed":...}`, 1s timeout (`connectornats.VinAllowedTimeout`, a var so tests can shrink it) - is pinned to match an externally-deployed responder; changing it is a breaking cross-service change. It fails OPEN (admits the vehicle) on any check failure - no responder, timeout, or malformed reply - logging `nats_connector_vin_allowed_fail_open` and incrementing `data_connector_nats_fail_open_count`, since customer telemetry availability outranks enforcement latency and denying is best-effort anyway.
+
+Grafted from upstream commit `1371902` ("introduce data connectors"), which also shipped `grpc`/`http`/`redis` adapters. Those were dropped here to avoid promoting `google.golang.org/grpc` to a direct dependency and pulling in an unused `redis` client for adapters this fork has no use for; pull them back from that commit if a future capability genuinely needs one.
+
 ## NATS test harness (`datastore/nats/`)
 
 `datastore/nats` is our only production dispatcher, covered end-to-end by an **in-process embedded NATS server** (`nats-io/nats-server/v2`, test-only) rather than docker-compose - so it runs in plain `make test` with no Docker, in ~2-4s. Pinned to `v2.10.29` (originally the newest tag supporting the fork's then-`go 1.24.0` floor, now stale since go.mod moved to `go 1.26.0`); don't bump it opportunistically outside a dedicated change.
@@ -110,3 +119,10 @@ Sharp edges in the integration/backend setup:
 - **`hook.LastEntry()` is unreliable here:** NATS connection-state handlers (`nats_connected`/`reconnected`/`disconnected`) log from a background goroutine and can land after the line under test. Search `hook.AllEntries()` for the expected `Message` (see `findLogEntry`).
 - **Tracer delegation is process-global and one-shot:** OTel's global `TracerProvider` delegates to the first real provider exactly once (`delegateTraceOnce`), and nats.go's package-level `tracer` is vended at package init. So any spec asserting "no trace headers when tracing is unconfigured" must run *before* any spec that ever sets a real provider - handled by declaration order. Don't add a tracer-configuring spec earlier in this package's files without accounting for it.
 - **The "buffers publishes across a brief server outage" spec races core NATS's lack of durability, not reconnect speed.** A restarted core-NATS server (no JetStream) only routes to subscribers already registered when the publish is processed; if the producer reconnects and flushes before the subscriber resubscribes, the message is silently dropped (normal at-most-once behavior). The fix removes the race, not the timeout: park the producer connection in `RECONNECTING` with an effectively-infinite `ReconnectWait` (via the `NatsConnect` seam), confirm the subscriber is *actually* resubscribed with a round-trip probe, then call `producerConn.ForceReconnect()` - `doReconnect` runs `resendSubscriptions()` before flushing pending items. If this flakes again, suspect this ordering race before enlarging any `Eventually` window.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

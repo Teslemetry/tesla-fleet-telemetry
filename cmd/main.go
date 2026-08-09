@@ -135,6 +135,10 @@ func startServer(ctx context.Context, stopSignal context.CancelFunc, config *con
 			logger.ErrorLog("producer_close_error", dispatcherCloseErr, logrus.LogInfo{"dispatcher": dispatcher})
 		}
 	}
+
+	if config.DataConnector != nil {
+		config.DataConnector.Close()
+	}
 	logger.ActivityLog("stopped_server", nil)
 	return err
 }

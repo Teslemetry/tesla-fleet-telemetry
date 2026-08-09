@@ -4,9 +4,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -15,6 +17,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/teslamotors/fleet-telemetry/config"
+	"github.com/teslamotors/fleet-telemetry/connector"
+	"github.com/teslamotors/fleet-telemetry/connector/adapter/file"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/messages"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/noop"
@@ -243,5 +247,93 @@ var _ = Describe("Socket handler test", func() {
 		Eventually(func() *logrus.LogInfo { return findEntry("socket_disconnected") }).ShouldNot(BeNil())
 		disconnected := findEntry("socket_disconnected")
 		Expect((*disconnected)["vin"]).To(Equal("device-1"))
+	})
+
+	It("ServeBinaryWs closes the connection when the data connector rejects the vin", func() {
+		logger, _ := logrus.NoOpLogger()
+
+		allowlistFile, err := os.CreateTemp("", "vin-allowed-*.json")
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = os.Remove(allowlistFile.Name()) }()
+		Expect(os.WriteFile(allowlistFile.Name(), []byte(`{"allowed_vins":["some-other-vin"]}`), 0644)).To(Succeed())
+
+		dataConnector := connector.NewProvider(connector.Config{
+			File: &file.Config{Path: allowlistFile.Name(), Capabilities: []string{"vin_allowed"}},
+		}, noop.NewCollector(), logger)
+
+		conf := &config.Config{
+			RateLimit: &config.RateLimit{
+				MessageLimit:              1,
+				MessageIntervalTimeSecond: 1 * time.Second,
+			},
+			MetricCollector: noop.NewCollector(),
+			DataConnector:   dataConnector,
+		}
+
+		registry := streaming.NewSocketRegistry()
+		producerRules = make(map[string][]telemetry.Producer)
+		_, s, err := streaming.InitServer(conf, airbrake.NewAirbrakeHandler(nil), producerRules, logger, registry)
+		Expect(err).NotTo(HaveOccurred())
+
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{makeCert("device-not-allowed", "TeslaMotors")},
+			VerifiedChains:   [][]*x509.Certificate{{makeCert("device-not-allowed", "TeslaMotors")}},
+		}
+		srv := httptest.NewServer(withTLSState(http.HandlerFunc(s.ServeBinaryWs(conf)), tlsState))
+		defer srv.Close()
+		u, _ := url.Parse(srv.URL)
+		u.Scheme = "ws"
+
+		dialer := &websocket.Dialer{HandshakeTimeout: 1 * time.Second}
+		conn, _, err := dialer.Dial(u.String(), nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Server should close the connection: this vin isn't in the allowlist
+		err = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		Expect(err).NotTo(HaveOccurred())
+		_, _, err = conn.ReadMessage()
+		Expect(err).To(HaveOccurred())
+		_ = conn.Close()
+	})
+
+	It("ServeBinaryWs admits the vehicle when no data connector is configured", func() {
+		logger, _ := logrus.NoOpLogger()
+
+		conf := &config.Config{
+			RateLimit: &config.RateLimit{
+				MessageLimit:              1,
+				MessageIntervalTimeSecond: 1 * time.Second,
+			},
+			MetricCollector: noop.NewCollector(),
+		}
+
+		registry := streaming.NewSocketRegistry()
+		producerRules = make(map[string][]telemetry.Producer)
+		_, s, err := streaming.InitServer(conf, airbrake.NewAirbrakeHandler(nil), producerRules, logger, registry)
+		Expect(err).NotTo(HaveOccurred())
+
+		realCert := makeCert("device-1", "TeslaMotors")
+		tlsState := &tls.ConnectionState{
+			PeerCertificates: []*x509.Certificate{realCert},
+			VerifiedChains:   [][]*x509.Certificate{{realCert}},
+		}
+		srv := httptest.NewServer(withTLSState(http.HandlerFunc(s.ServeBinaryWs(conf)), tlsState))
+		defer srv.Close()
+		u, _ := url.Parse(srv.URL)
+		u.Scheme = "ws"
+
+		dialer := &websocket.Dialer{HandshakeTimeout: 1 * time.Second}
+		conn, _, err := dialer.Dial(u.String(), nil)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = conn.Close() }()
+
+		// Connection should stay open: no vin_allowed capability is configured
+		err = conn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		Expect(err).NotTo(HaveOccurred())
+		_, _, err = conn.ReadMessage()
+		Expect(err).To(HaveOccurred())
+		netErr, ok := err.(net.Error)
+		Expect(ok).To(BeTrue())
+		Expect(netErr.Timeout()).To(BeTrue())
 	})
 })
