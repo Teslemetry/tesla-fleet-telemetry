@@ -14,19 +14,19 @@ import (
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/noop"
 )
 
-var _ = Describe("ConnectorProvider", func() {
+var _ = Describe("Provider", func() {
 	var (
 		config       connector.Config
 		logger       *logrus.Logger
 		metricsColl  metrics.MetricCollector
-		connProvider *connector.ConnectorProvider
+		connProvider *connector.Provider
 		testFilePath string
 	)
 
 	BeforeEach(func() {
 		f, err := os.CreateTemp("/tmp", "test-connector-*.json")
 		Expect(err).NotTo(HaveOccurred())
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		testFilePath = f.Name()
 
 		jsonData, err := json.Marshal(file.Data{AllowedVins: []string{"VIN1"}})
@@ -43,12 +43,12 @@ var _ = Describe("ConnectorProvider", func() {
 		logger, _ = logrus.NoOpLogger()
 		metricsColl = noop.NewCollector()
 
-		connProvider = connector.NewConnectorProvider(config, metricsColl, logger)
+		connProvider = connector.NewProvider(config, metricsColl, logger)
 		Expect(connProvider).NotTo(BeNil())
 	})
 
 	AfterEach(func() {
-		os.Remove(testFilePath)
+		_ = os.Remove(testFilePath)
 	})
 
 	It("gets data using the configured source", func() {
@@ -69,7 +69,7 @@ var _ = Describe("ConnectorProvider", func() {
 
 	Context("with no connectors configured", func() {
 		BeforeEach(func() {
-			connProvider = connector.NewConnectorProvider(connector.Config{}, metricsColl, logger)
+			connProvider = connector.NewProvider(connector.Config{}, metricsColl, logger)
 		})
 
 		It("admits every vin", func() {

@@ -30,9 +30,9 @@ type Connectors struct {
 	Nats *nats.Connector
 }
 
-// ConnectorProvider routes each capability check to whichever configured connector
+// Provider routes each capability check to whichever configured connector
 // was assigned that capability.
-type ConnectorProvider struct {
+type Provider struct {
 	VinAllowedConnector Connector
 	Connectors          Connectors
 
@@ -40,11 +40,11 @@ type ConnectorProvider struct {
 	logger *logrus.Logger
 }
 
-// NewConnectorProvider configures every data connector listed in config and assigns
+// NewProvider configures every data connector listed in config and assigns
 // capabilities to them. With no connectors configured, capability checks pass through
 // (e.g. VinAllowed admits every vin) - the feature ships default-off.
-func NewConnectorProvider(config Config, metricsCollector metrics.MetricCollector, logger *logrus.Logger) *ConnectorProvider {
-	provider := &ConnectorProvider{
+func NewProvider(config Config, metricsCollector metrics.MetricCollector, logger *logrus.Logger) *Provider {
+	provider := &Provider{
 		logger: logger,
 		config: config,
 	}
@@ -55,7 +55,7 @@ func NewConnectorProvider(config Config, metricsCollector metrics.MetricCollecto
 
 // VinAllowed reports whether vin may connect. With no vin_allowed capability configured,
 // it admits every vin.
-func (c *ConnectorProvider) VinAllowed(vin string) (bool, error) {
+func (c *Provider) VinAllowed(vin string) (bool, error) {
 	if c.VinAllowedConnector == nil {
 		return true, nil
 	}
@@ -64,7 +64,7 @@ func (c *ConnectorProvider) VinAllowed(vin string) (bool, error) {
 }
 
 // Close tears down every configured connector.
-func (c *ConnectorProvider) Close() {
+func (c *Provider) Close() {
 	if c.Connectors.File != nil {
 		_ = c.Connectors.File.Close()
 	}
@@ -73,7 +73,7 @@ func (c *ConnectorProvider) Close() {
 	}
 }
 
-func (c *ConnectorProvider) configure(metricsCollector metrics.MetricCollector, logger *logrus.Logger) {
+func (c *Provider) configure(metricsCollector metrics.MetricCollector, logger *logrus.Logger) {
 	if c.config.File != nil && len(c.config.File.Capabilities) > 0 {
 		connector, err := file.NewConnector(*c.config.File, metricsCollector, logger)
 		if err == nil {
@@ -95,13 +95,13 @@ func (c *ConnectorProvider) configure(metricsCollector metrics.MetricCollector, 
 	}
 }
 
-func (c *ConnectorProvider) configureConnectorCapabilities(connector Connector, capabilities []string) {
+func (c *Provider) configureConnectorCapabilities(connector Connector, capabilities []string) {
 	for _, capability := range capabilities {
 		c.setCapabilityByName(capability, connector)
 	}
 }
 
-func (c *ConnectorProvider) setCapabilityByName(name string, connector Connector) {
+func (c *Provider) setCapabilityByName(name string, connector Connector) {
 	switch name {
 	case "vin_allowed":
 		if c.VinAllowedConnector != nil {

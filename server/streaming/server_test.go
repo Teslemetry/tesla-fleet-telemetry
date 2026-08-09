@@ -254,10 +254,10 @@ var _ = Describe("Socket handler test", func() {
 
 		allowlistFile, err := os.CreateTemp("", "vin-allowed-*.json")
 		Expect(err).NotTo(HaveOccurred())
-		defer os.Remove(allowlistFile.Name())
+		defer func() { _ = os.Remove(allowlistFile.Name()) }()
 		Expect(os.WriteFile(allowlistFile.Name(), []byte(`{"allowed_vins":["some-other-vin"]}`), 0644)).To(Succeed())
 
-		dataConnector := connector.NewConnectorProvider(connector.Config{
+		dataConnector := connector.NewProvider(connector.Config{
 			File: &file.Config{Path: allowlistFile.Name(), Capabilities: []string{"vin_allowed"}},
 		}, noop.NewCollector(), logger)
 

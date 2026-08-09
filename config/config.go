@@ -118,7 +118,7 @@ type Config struct {
 	DataConnectorConfig connector.Config `json:"data_connectors,omitempty"`
 
 	// DataConnector manages accessing supplemental data from external sources
-	DataConnector *connector.ConnectorProvider
+	DataConnector *connector.Provider
 }
 
 // Airbrake config
@@ -274,7 +274,7 @@ func (c *Config) configureMetricsCollector(logger *logrus.Logger) {
 }
 
 func (c *Config) configureDataConnector(logger *logrus.Logger) {
-	c.DataConnector = connector.NewConnectorProvider(c.DataConnectorConfig, c.MetricCollector, logger)
+	c.DataConnector = connector.NewProvider(c.DataConnectorConfig, c.MetricCollector, logger)
 }
 
 // ConfigureOTelLogging sets up the OpenTelemetry logging hook if enabled

@@ -41,7 +41,7 @@ var _ = Describe("Connector", func() {
 		logger, _ = logrus.NoOpLogger()
 		file, err := os.CreateTemp("/tmp", "test-file-*.json")
 		Expect(err).NotTo(HaveOccurred())
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		testFilePath = file.Name()
 
@@ -60,8 +60,8 @@ var _ = Describe("Connector", func() {
 	})
 
 	AfterEach(func() {
-		os.Remove(testFilePath)
-		testConnector.Close()
+		_ = os.Remove(testFilePath)
+		_ = testConnector.Close()
 	})
 
 	Describe("VinAllowed", func() {
