@@ -15,6 +15,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/teslamotors/fleet-telemetry/config"
 	"github.com/teslamotors/fleet-telemetry/connector"
@@ -22,6 +23,7 @@ import (
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/messages"
 	"github.com/teslamotors/fleet-telemetry/metrics/adapter/noop"
+	"github.com/teslamotors/fleet-telemetry/protos"
 	"github.com/teslamotors/fleet-telemetry/server/airbrake"
 	"github.com/teslamotors/fleet-telemetry/server/streaming"
 	"github.com/teslamotors/fleet-telemetry/telemetry"
@@ -247,6 +249,112 @@ var _ = Describe("Socket handler test", func() {
 		Eventually(func() *logrus.LogInfo { return findEntry("socket_disconnected") }).ShouldNot(BeNil())
 		disconnected := findEntry("socket_disconnected")
 		Expect((*disconnected)["vin"]).To(Equal("device-1"))
+	})
+
+	Describe("connectivity event connection_id", func() {
+		var (
+			logger   *logrus.Logger
+			spy      *spyProducer
+			srv      *httptest.Server
+			wsURL    string
+			realCert *x509.Certificate
+		)
+
+		BeforeEach(func() {
+			var err error
+			logger, _ = logrus.NoOpLogger()
+			spy = &spyProducer{captured: make(chan *telemetry.Record, 10)}
+
+			conf := &config.Config{
+				RateLimit: &config.RateLimit{
+					MessageLimit:              1,
+					MessageIntervalTimeSecond: 1 * time.Second,
+				},
+				MetricCollector: noop.NewCollector(),
+			}
+
+			registry := streaming.NewSocketRegistry()
+			producerRules = map[string][]telemetry.Producer{"connectivity": {spy}}
+			_, s, err := streaming.InitServer(conf, airbrake.NewAirbrakeHandler(nil), producerRules, logger, registry)
+			Expect(err).NotTo(HaveOccurred())
+
+			realCert = makeCert("device-1", "TeslaMotors")
+			tlsState := &tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{realCert},
+				VerifiedChains:   [][]*x509.Certificate{{realCert}},
+			}
+			srv = httptest.NewServer(withTLSState(http.HandlerFunc(s.ServeBinaryWs(conf)), tlsState))
+			u, _ := url.Parse(srv.URL)
+			u.Scheme = "ws"
+			wsURL = u.String()
+		})
+
+		AfterEach(func() {
+			srv.Close()
+		})
+
+		connectionID := func(record *telemetry.Record) string {
+			var msg protos.VehicleConnectivity
+			Expect(proto.Unmarshal(record.Payload(), &msg)).To(Succeed())
+			return msg.GetConnectionId()
+		}
+
+		It("gives a socket's CONNECTED and DISCONNECTED events the same connection_id", func() {
+			conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			var connected *telemetry.Record
+			Eventually(spy.captured).Should(Receive(&connected))
+			Expect(connected.Payload()).NotTo(BeEmpty())
+
+			_ = conn.Close()
+
+			var disconnected *telemetry.Record
+			Eventually(spy.captured).Should(Receive(&disconnected))
+
+			connectedID := connectionID(connected)
+			Expect(connectedID).NotTo(BeEmpty())
+			Expect(connectionID(disconnected)).To(Equal(connectedID))
+		})
+
+		It("gives overlapping sockets for the same vin distinct connection_ids", func() {
+			connA, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = connA.Close() }()
+
+			connB, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = connB.Close() }()
+
+			var first, second *telemetry.Record
+			Eventually(spy.captured).Should(Receive(&first))
+			Eventually(spy.captured).Should(Receive(&second))
+
+			Expect(connectionID(first)).NotTo(BeEmpty())
+			Expect(connectionID(second)).NotTo(BeEmpty())
+			Expect(connectionID(first)).NotTo(Equal(connectionID(second)))
+		})
+
+		It("does not let a client-supplied colliding X-TXID collide connection_ids", func() {
+			collidingTxid := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+			header := http.Header{"X-TXID": []string{collidingTxid}}
+
+			connA, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = connA.Close() }()
+
+			connB, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = connB.Close() }()
+
+			var first, second *telemetry.Record
+			Eventually(spy.captured).Should(Receive(&first))
+			Eventually(spy.captured).Should(Receive(&second))
+
+			Expect(connectionID(first)).NotTo(BeEmpty())
+			Expect(connectionID(second)).NotTo(BeEmpty())
+			Expect(connectionID(first)).NotTo(Equal(connectionID(second)))
+		})
 	})
 
 	It("ServeBinaryWs closes the connection when the data connector rejects the vin", func() {

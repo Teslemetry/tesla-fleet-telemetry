@@ -45,6 +45,10 @@ type SocketManager struct {
 	StartTime    time.Time
 	UUID         string
 
+	// LifecycleID is a server-generated id used only for connectivity dispatch. Unlike
+	// UUID, it never takes a client-supplied X-TXID, so two sockets can't collide on it.
+	LifecycleID string
+
 	config                 *config.Config
 	logger                 *logrus.Logger
 	requestIdentity        *telemetry.RequestIdentity
@@ -101,6 +105,7 @@ func NewSocketManager(ctx context.Context, requestIdentity *telemetry.RequestIde
 		RecordsStats: make(map[string]int),
 		StartTime:    time.Now(),
 		UUID:         socketUUID.String(),
+		LifecycleID:  uuid.NewString(),
 
 		config:                 config,
 		metricsCollector:       config.MetricCollector,

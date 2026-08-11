@@ -142,7 +142,7 @@ func (s *Server) dispatchConnectivityEvent(sm *SocketManager, serializer *teleme
 
 	connectivityMessage := &protos.VehicleConnectivity{
 		Vin:              sm.requestIdentity.DeviceID,
-		ConnectionId:     sm.UUID,
+		ConnectionId:     sm.LifecycleID,
 		NetworkInterface: sm.GetNetworkInterface(),
 		CreatedAt:        timestamppb.Now(),
 		Status:           event,
