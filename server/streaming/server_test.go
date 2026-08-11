@@ -251,19 +251,21 @@ var _ = Describe("Socket handler test", func() {
 		Expect((*disconnected)["vin"]).To(Equal("device-1"))
 	})
 
-	Describe("connectivity event connection_id", func() {
+	Describe("connected topic connection_id (server socket lifecycle facts)", func() {
 		var (
-			logger   *logrus.Logger
-			spy      *spyProducer
-			srv      *httptest.Server
-			wsURL    string
-			realCert *x509.Certificate
+			logger    *logrus.Logger
+			spy       *spyProducer
+			legacySpy *spyProducer
+			srv       *httptest.Server
+			wsURL     string
+			realCert  *x509.Certificate
 		)
 
 		BeforeEach(func() {
 			var err error
 			logger, _ = logrus.NoOpLogger()
 			spy = &spyProducer{captured: make(chan *telemetry.Record, 10)}
+			legacySpy = &spyProducer{captured: make(chan *telemetry.Record, 10)}
 
 			conf := &config.Config{
 				RateLimit: &config.RateLimit{
@@ -274,7 +276,7 @@ var _ = Describe("Socket handler test", func() {
 			}
 
 			registry := streaming.NewSocketRegistry()
-			producerRules = map[string][]telemetry.Producer{"connectivity": {spy}}
+			producerRules = map[string][]telemetry.Producer{"connected": {spy}, "connectivity": {legacySpy}}
 			_, s, err := streaming.InitServer(conf, airbrake.NewAirbrakeHandler(nil), producerRules, logger, registry)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -354,6 +356,26 @@ var _ = Describe("Socket handler test", func() {
 			Expect(connectionID(first)).NotTo(BeEmpty())
 			Expect(connectionID(second)).NotTo(BeEmpty())
 			Expect(connectionID(first)).NotTo(Equal(connectionID(second)))
+		})
+
+		It("leaves the legacy connectivity topic byte-untouched: a colliding X-TXID still collides its connection_id", func() {
+			collidingTxid := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+			header := http.Header{"X-TXID": []string{collidingTxid}}
+
+			connA, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = connA.Close() }()
+
+			connB, _, err := websocket.DefaultDialer.Dial(wsURL, header)
+			Expect(err).NotTo(HaveOccurred())
+			defer func() { _ = connB.Close() }()
+
+			var first, second *telemetry.Record
+			Eventually(legacySpy.captured).Should(Receive(&first))
+			Eventually(legacySpy.captured).Should(Receive(&second))
+
+			Expect(connectionID(first)).To(Equal(collidingTxid))
+			Expect(connectionID(second)).To(Equal(collidingTxid))
 		})
 	})
 

@@ -90,7 +90,7 @@ For ease of installation and operation, run Fleet Telemetry on Kubernetes or a s
     "enabled": bool,
     "message_limit": int - ex.: 1000
   },
-  "records": { // list of records and their dispatchers, currently: alerts, errors, connectivity, and V(vehicle data)
+  "records": { // list of records and their dispatchers, currently: alerts, errors, connectivity, connected, and V(vehicle data)
     "alerts": [
         "logger"
     ],
@@ -174,11 +174,19 @@ Dispatchers handle vehicle data processing upon its arrival at Fleet Telemetry s
 Fleet Telemetry can send ack messages back to the vehicle. This is useful for applications that need to ensure the data was received and processed. To enable this feature, set `reliable_ack_sources` to one of configured dispatchers (`kafka`,`kinesis`,`pubsub`,`zmq`, `mqtt`, `nats`) in the config file. Reliable acks can only be set to one dispatcher per recordType. See [here](./test/integration/config.json#L8) for sample config.
 
 ## Detecting Vehicle Connectivity Changes
-On the vehicle, Fleet Telemetry client behave similarly to how the connectivity engine for vehicle commands. Therefore we can use Fleet Telemetry connectivity event to assume when a vehicle is online. Note that it is a proxy, but if configured properly Fleet Telemetry connectivity time should match vehicle connectivity state in 99%+. To enable connectivity events simply add the `connectivity` records in the list of events in [server_config.json](./examples/server_config.json) file:
+Fleet Telemetry has two distinct record types for connection state, and they answer different questions:
+
+* `connectivity` is a **vehicle-reported** event: the vehicle itself sends it when it switches network interface (e.g. wifi to cellular). It is a proxy for vehicle online state, not a guarantee - the vehicle can go quiet without ever sending one.
+* `connected` is a **server-observed** fact: the server emits it itself when a vehicle's websocket registers or deregisters with this Fleet Telemetry instance. A live message on this topic is hard proof the vehicle was awake and holding a connection open here at that moment. Its `connection_id` is a server-generated id unique to that one socket's lifetime, letting you pair its CONNECTED and DISCONNECTED events even across overlapping sockets for the same VIN.
+
+Both carry the same `VehicleConnectivity` proto. To enable either, add the corresponding record type in [server_config.json](./examples/server_config.json):
 
   ```
     "records": {
         "connectivity": [
+            "nats"
+        ],
+        "connected": [
             "nats"
         ]
       }

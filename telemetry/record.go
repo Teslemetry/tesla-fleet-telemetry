@@ -184,7 +184,7 @@ func (record *Record) applyProtoRecordTransforms() error {
 		record.PayloadBytes, err = proto.Marshal(message)
 		record.protoMessage = message
 		return err
-	case "connectivity":
+	case "connectivity", "connected":
 		message := &protos.VehicleConnectivity{}
 		err := proto.Unmarshal(record.Payload(), message)
 		if err != nil {

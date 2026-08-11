@@ -34,7 +34,13 @@ var (
 )
 
 const (
+	// connectitivityTopic carries vehicle-reported network-interface events (wifi/cellular
+	// changes) - it is a vehicle fact, not proof that a socket is open on this server.
 	connectitivityTopic = "connectivity"
+
+	// connectionTopic carries this server's own socket lifecycle facts: a live message on
+	// this topic is hard proof the vehicle is awake and holding a connection open here.
+	connectionTopic = "connected"
 )
 
 // ServerMetrics stores metrics reported from this package
@@ -142,7 +148,7 @@ func (s *Server) dispatchConnectivityEvent(sm *SocketManager, serializer *teleme
 
 	connectivityMessage := &protos.VehicleConnectivity{
 		Vin:              sm.requestIdentity.DeviceID,
-		ConnectionId:     sm.LifecycleID,
+		ConnectionId:     sm.UUID,
 		NetworkInterface: sm.GetNetworkInterface(),
 		CreatedAt:        timestamppb.Now(),
 		Status:           event,
@@ -178,6 +184,53 @@ func (s *Server) dispatchConnectivityEvent(sm *SocketManager, serializer *teleme
 	return nil
 }
 
+// dispatchConnectionEvent emits this socket's own CONNECTED/DISCONNECTED lifecycle fact on
+// connectionTopic, keyed by sm.LifecycleID rather than sm.UUID - see LifecycleID's doc comment
+// for why those two ids must stay distinct.
+func (s *Server) dispatchConnectionEvent(sm *SocketManager, serializer *telemetry.BinarySerializer, event protos.ConnectivityEvent) error {
+	connectionDispatcher, ok := s.DispatchRules[connectionTopic]
+	if !ok {
+		return nil
+	}
+
+	connectionMessage := &protos.VehicleConnectivity{
+		Vin:              sm.requestIdentity.DeviceID,
+		ConnectionId:     sm.LifecycleID,
+		NetworkInterface: sm.GetNetworkInterface(),
+		CreatedAt:        timestamppb.Now(),
+		Status:           event,
+	}
+
+	payload, err := proto.Marshal(connectionMessage)
+	if err != nil {
+		return err
+	}
+
+	// creating streamMessage is hack to satisfy input reqirements for telemetry.NewRecord
+	streamMessage := messages.StreamMessage{
+		TXID:         []byte(sm.LifecycleID),
+		SenderID:     []byte(sm.requestIdentity.SenderID),
+		DeviceID:     []byte(sm.requestIdentity.DeviceID),
+		DeviceType:   []byte("vehicle_device"),
+		MessageTopic: []byte(connectionTopic),
+		Payload:      payload,
+		CreatedAt:    uint32(connectionMessage.CreatedAt.AsTime().Unix()),
+	}
+
+	message, err := streamMessage.ToBytes()
+	if err != nil {
+		return err
+	}
+	record, err := telemetry.NewRecord(serializer, message, sm.LifecycleID, sm.transmitDecodedRecords)
+	if err != nil {
+		return err
+	}
+	for _, dispatcher := range connectionDispatcher {
+		dispatcher.Produce(record)
+	}
+	return nil
+}
+
 // isConnectionAllowed checks the configured data connector (if any) for whether
 // deviceID may connect. A check error still yields whatever allowed value the
 // connector chose (e.g. fail-open) - see connector implementations for their
@@ -206,7 +259,9 @@ func (s *Server) registerSocket(sm *SocketManager, serializer *telemetry.BinaryS
 	if err := s.dispatchConnectivityEvent(sm, serializer, event); err != nil {
 		s.logger.ErrorLog("connectivity_registeration_error", err, logrus.LogInfo{"deviceID": sm.requestIdentity.DeviceID, "event": event})
 	}
-
+	if err := s.dispatchConnectionEvent(sm, serializer, event); err != nil {
+		s.logger.ErrorLog("connection_registeration_error", err, logrus.LogInfo{"deviceID": sm.requestIdentity.DeviceID, "event": event})
+	}
 }
 
 func (s *Server) deregisterSocket(sm *SocketManager, serializer *telemetry.BinarySerializer) {
@@ -214,6 +269,9 @@ func (s *Server) deregisterSocket(sm *SocketManager, serializer *telemetry.Binar
 	event := protos.ConnectivityEvent_DISCONNECTED
 	if err := s.dispatchConnectivityEvent(sm, serializer, event); err != nil {
 		s.logger.ErrorLog("connectivity_deregisteration_error", err, logrus.LogInfo{"deviceID": sm.requestIdentity.DeviceID, "event": event})
+	}
+	if err := s.dispatchConnectionEvent(sm, serializer, event); err != nil {
+		s.logger.ErrorLog("connection_deregisteration_error", err, logrus.LogInfo{"deviceID": sm.requestIdentity.DeviceID, "event": event})
 	}
 }
 

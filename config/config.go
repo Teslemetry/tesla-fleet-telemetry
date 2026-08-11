@@ -454,7 +454,7 @@ func (c *Config) ConfigureProducers(airbrakeHandler *airbrake.Handler, logger *l
 func (c *Config) configureReliableAckSources() (map[telemetry.Dispatcher]map[string]interface{}, error) {
 	reliableAckSources := make(map[telemetry.Dispatcher]map[string]interface{}, 0)
 	for txType, dispatchRule := range c.ReliableAckSources {
-		if txType == "connectivity" {
+		if txType == "connectivity" || txType == "connected" {
 			return nil, fmt.Errorf("reliable ack not needed for txType: %s", txType)
 		}
 		if dispatchRule == telemetry.Logger {

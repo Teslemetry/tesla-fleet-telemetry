@@ -35,6 +35,9 @@
         ],
         "connectivity": [
             "logger"
+        ],
+        "connected": [
+            "logger"
         ]
     },
     "tls": {

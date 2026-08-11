@@ -45,8 +45,9 @@ type SocketManager struct {
 	StartTime    time.Time
 	UUID         string
 
-	// LifecycleID is a server-generated id used only for connectivity dispatch. Unlike
-	// UUID, it never takes a client-supplied X-TXID, so two sockets can't collide on it.
+	// LifecycleID is a server-generated id used only for the connectionTopic CONNECTED/
+	// DISCONNECTED dispatch. Unlike UUID, it never takes a client-supplied X-TXID, so
+	// two sockets can't collide on it.
 	LifecycleID string
 
 	config                 *config.Config

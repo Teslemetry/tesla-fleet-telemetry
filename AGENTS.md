@@ -55,7 +55,7 @@ Vehicles (WebSocket/TLS) → server/streaming → telemetry/record → datastore
 - **protos/**: Protocol Buffer definitions for vehicle data types.
 - **metrics/**: Prometheus and StatsD adapters.
 
-**Record types** (routed to dispatchers via `records` in config.json): `V` (telemetry), `alerts`, `errors`, `connectivity` (connection state changes).
+**Record types** (routed to dispatchers via `records` in config.json): `V` (telemetry), `alerts`, `errors`, `connectivity` (vehicle-reported network-interface changes, e.g. wifi/cellular - a vehicle fact, unreliable as a presence signal), `connected` (this server's own socket CONNECTED/DISCONNECTED facts - a live message on this topic is hard proof the vehicle is awake). Both carry the `VehicleConnectivity` proto; keep them on separate topics rather than conflating vehicle-reported and server-observed connection facts.
 
 **Adding a dispatcher:** implement `telemetry.Producer` (Close, Produce, ProcessReliableAck, ReportError), add config handling in `config/config.go`, create `datastore/<name>/`, add integration tests.
 
@@ -100,7 +100,7 @@ Sharp edges in the integration/backend setup:
 
 ## VIN-spoof observability
 
-`telemetry.Record.applyProtoRecordTransforms` always overwrites a payload's claimed `Vin` with the connection-authenticated `record.Vin` (all four record arms do `message.Vin = record.Vin`) - a silent correction, not a drop. The `connectivity` arm additionally calls `record.logVinMismatch(...)` to emit a `WARN "unexpected_vin"` (fields: `socket_id`, `txid`, `record_type`, `claimed_vin`, `connection_vin`) when a non-empty claimed VIN differs from the authenticated one. Rate-capped to once per connection via `BinarySerializer.ShouldLogVinMismatch()` (an `atomic.Bool` on the per-connection serializer). If extended to the `V`/`alerts`/`errors` arms, reuse the same helper and per-connection cap.
+`telemetry.Record.applyProtoRecordTransforms` always overwrites a payload's claimed `Vin` with the connection-authenticated `record.Vin` (all five record arms do `message.Vin = record.Vin`) - a silent correction, not a drop. The `connectivity`/`connected` arm additionally calls `record.logVinMismatch(...)` to emit a `WARN "unexpected_vin"` (fields: `socket_id`, `txid`, `record_type`, `claimed_vin`, `connection_vin`) when a non-empty claimed VIN differs from the authenticated one. Rate-capped to once per connection via `BinarySerializer.ShouldLogVinMismatch()` (an `atomic.Bool` on the per-connection serializer). If extended to the `V`/`alerts`/`errors` arms, reuse the same helper and per-connection cap.
 
 ## Data connectors (`connector/`)
 
