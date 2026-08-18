@@ -35,7 +35,9 @@ Run `make format && make linters && make test` after every change - this mirrors
 curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /tmp/goroot -xzf -
 export PATH=/tmp/goroot/go/bin:$PATH
 ```
-`golangci-lint` isn't preinstalled; CI pins `v2.12.2` - `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`. Config is v2 format (`.golangci.yml` starts with `version: "2"`).
+`golangci-lint` isn't preinstalled; CI pins `v2.12.2` - `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`. Config is v2 format (`.golangci.yml` starts with `version: "2"`). Build it with `GOTOOLCHAIN=go1.26.0 go install ...` - a lower-Go-version build refuses to load `.golangci.yml` once it targets `go 1.26.0`.
+
+`make test`'s `go test -cover` needs `go tool covdata`; a `GOTOOLCHAIN`-auto-downloaded toolchain module doesn't ship it (`pkg/tool/<goos_arch>/` lacks the binary and there's no `cmd/covdata` source to build it from), so `go: no such tool "covdata"` errors on most packages. Put the tar.gz-installed toolchain's `bin/` first on `PATH` (as above) rather than relying on toolchain auto-switch for `make test`/`make linters`.
 
 **macOS deps:** `brew install librdkafka pkg-config libsodium zmq`. On libcrypto errors, add your OpenSSL pkgconfig dir to `PKG_CONFIG_PATH`.
 
