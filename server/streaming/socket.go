@@ -299,7 +299,6 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 				// client exceeded the rate limit
 				messagesRateLimited++
 				record, _ := telemetry.NewRecord(serializer, message, sm.UUID, sm.transmitDecodedRecords)
-				sm.trackSignalUsage(record)
 				metricsRegistry.rateLimitExceededCount.Inc(map[string]string{"device_id": sm.requestIdentity.DeviceID, "txtype": record.TxType})
 				continue
 			}
@@ -317,6 +316,9 @@ func (sm *SocketManager) ProcessTelemetry(serializer *telemetry.BinarySerializer
 	}
 }
 
+// trackSignalUsage must fire for the same records as ReportMetricBytesPerRecords/processRecord
+// (dispatched records), not rate-limited-and-dropped ones, so signal_count stays denominated
+// like record_total/dispatch_total.
 func (sm *SocketManager) trackSignalUsage(record *telemetry.Record) {
 	metricsRegistry.signalsCount.Add(int64(record.SignalsCount()), map[string]string{"record_type": record.TxType})
 	vin := record.Vin
@@ -360,6 +362,7 @@ func (sm *SocketManager) ParseAndProcessRecord(serializer *telemetry.BinarySeria
 
 	// write the record out to kafka
 	sm.ReportMetricBytesPerRecords(record.TxType, record.Length())
+	sm.trackSignalUsage(record)
 	sm.processRecord(record)
 
 	// respond instantly to the client if we are not doing reliable ACKs
