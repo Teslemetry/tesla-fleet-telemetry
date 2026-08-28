@@ -39,6 +39,8 @@ export PATH=/tmp/goroot/go/bin:$PATH
 
 `make test`'s `go test -cover` needs `go tool covdata`; a `GOTOOLCHAIN`-auto-downloaded toolchain module doesn't ship it (`pkg/tool/<goos_arch>/` lacks the binary and there's no `cmd/covdata` source to build it from), so `go: no such tool "covdata"` errors on most packages. Put the tar.gz-installed toolchain's `bin/` first on `PATH` (as above) rather than relying on toolchain auto-switch for `make test`/`make linters`.
 
+`make generate-protos` needs `protoc` (v5.28.3-compatible; ruby/python output is protoc-builtin, no extra plugin) and `protoc-gen-go` **pinned to `v1.28.1`** (`go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1`) - this is older than the `google.golang.org/protobuf` runtime version in `go.mod`, which is expected. Installing whatever `protoc-gen-go` version matches `go.mod`'s protobuf runtime instead regenerates every `*.pb.go` file's internal representation (opaque-API struct tags, `unsafe` import, etc.), not just the one you touched - CI's "Generated protofiles are up to date" step (`make generate-protos && git diff --exit-code`) only tolerates the diff your `.proto` edit actually produces.
+
 **macOS deps:** `brew install librdkafka pkg-config libsodium zmq`. On libcrypto errors, add your OpenSSL pkgconfig dir to `PKG_CONFIG_PATH`.
 
 ## Architecture
