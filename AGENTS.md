@@ -1,12 +1,12 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for agents working in this repository.
 
 ## Project Overview
 
 Tesla Fleet Telemetry is a Go server reference implementation for Tesla's telemetry protocol. Vehicles connect via WebSocket with TLS client certificates, send Flatbuffers-encoded telemetry, and the server dispatches data to configurable backends (Kafka, Kinesis, Google Pub/Sub, MQTT, NATS, ZMQ, or logger).
 
-This is **Teslemetry's fork** of `teslamotors/fleet-telemetry`. The valuable knowledge here is fork-specific: how we cut releases, and where we diverge from upstream. NATS is the **only dispatcher we run in production** - the others exist for upstream parity. Changes that would conflict with a future `teslamotors/main` merge are worth flagging in the PR description so a human can weigh the tradeoff.
+This is **Teslemetry's fork** of `teslamotors/fleet-telemetry`. The valuable knowledge here is fork-specific: how we cut releases, and where we diverge from upstream. **NATS is the only dispatcher we run in production** - the others exist for upstream parity. Flag changes that would conflict with a future `teslamotors/main` merge in the PR description so a human can weigh the tradeoff.
 
 ## Conventions
 
@@ -14,34 +14,21 @@ This is **Teslemetry's fork** of `teslamotors/fleet-telemetry`. The valuable kno
 
 ## Build, Test & Toolchain
 
-```bash
-make build            # binary -> $GOPATH/bin/fleet-telemetry
-make test             # package tests (excludes test/integration; includes embedded-NATS e2e)
-make test-race        # with race detector
-make format           # must produce no diff
-make linters          # golangci-lint
-make vet
-make integration      # docker-compose backends (opt-in, see CI Notes)
-make generate-protos  # regenerate Go/Python/Ruby protobuf
-
-go test ./telemetry -run TestName -v   # single test
-go test -cover ./config                # coverage
-```
+Targets are in the `Makefile`; the ones you need: `build`, `test` (excludes `test/integration`), `test-race`, `format` (must produce no diff), `linters`, `vet`, `integration` (docker-compose, opt-in), `generate-protos`.
 
 Run `make format && make linters && make test` after every change - this mirrors the `build` CI job.
 
-**Toolchain:** `go.mod` requires `go 1.26.0`. Older system Go (pre-1.21) can't parse the `go 1.26.0` directive at all - toolchain auto-switch didn't exist before 1.21. If `go build` fails with `invalid go version`, install a matching toolchain rather than assuming the repo is broken:
-```bash
-curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /tmp/goroot -xzf -
-export PATH=/tmp/goroot/go/bin:$PATH
-```
-`golangci-lint` isn't preinstalled; CI pins `v2.12.2` - `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`. Config is v2 format (`.golangci.yml` starts with `version: "2"`). Build it with `GOTOOLCHAIN=go1.26.0 go install ...` - a lower-Go-version build refuses to load `.golangci.yml` once it targets `go 1.26.0`.
+Non-obvious setup:
 
-`make test`'s `go test -cover` needs `go tool covdata`; a `GOTOOLCHAIN`-auto-downloaded toolchain module doesn't ship it (`pkg/tool/<goos_arch>/` lacks the binary and there's no `cmd/covdata` source to build it from), so `go: no such tool "covdata"` errors on most packages. Put the tar.gz-installed toolchain's `bin/` first on `PATH` (as above) rather than relying on toolchain auto-switch for `make test`/`make linters`.
-
-`make generate-protos` needs `protoc` (v5.28.3-compatible; ruby/python output is protoc-builtin, no extra plugin) and `protoc-gen-go` **pinned to `v1.28.1`** (`go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28.1`) - this is older than the `google.golang.org/protobuf` runtime version in `go.mod`, which is expected. Installing whatever `protoc-gen-go` version matches `go.mod`'s protobuf runtime instead regenerates every `*.pb.go` file's internal representation (opaque-API struct tags, `unsafe` import, etc.), not just the one you touched - CI's "Generated protofiles are up to date" step (`make generate-protos && git diff --exit-code`) only tolerates the diff your `.proto` edit actually produces.
-
-**macOS deps:** `brew install librdkafka pkg-config libsodium zmq`. On libcrypto errors, add your OpenSSL pkgconfig dir to `PKG_CONFIG_PATH`.
+- **Go toolchain.** `go.mod` requires `go 1.26.0`; pre-1.21 Go can't even parse that directive (no toolchain auto-switch), so `invalid go version` means install a toolchain, not a broken repo. Install it as a real tar.gz and put its `bin/` first on `PATH`:
+  ```bash
+  curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz | tar -C /tmp/goroot -xzf -
+  export PATH=/tmp/goroot/go/bin:$PATH
+  ```
+  Don't rely on `GOTOOLCHAIN` auto-switch for `make test`/`make linters`: no Go distribution ships a prebuilt `covdata`, and a toolchain resolved out of the read-only module cache can't build one on demand, so `make test`'s `go test -cover` fails with `go: no such tool "covdata"` on most packages.
+- **golangci-lint** isn't preinstalled; CI pins `v2.12.2` (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2`). Config is v2 format. Build it with `GOTOOLCHAIN=go1.26.0` - a lower-Go-version build refuses to load a `.golangci.yml` targeting `go 1.26.0`.
+- **`make generate-protos`** needs `protoc` (v5.28.3-compatible; ruby/python output is protoc-builtin) and `protoc-gen-go` **pinned to `v1.28.1`**, which is deliberately older than `go.mod`'s protobuf runtime. A newer `protoc-gen-go` rewrites every `*.pb.go`'s internal representation (opaque-API struct tags, `unsafe` import), and CI's `make generate-protos && git diff --exit-code` gate only tolerates the diff your `.proto` edit actually produces.
+- **macOS deps:** `brew install librdkafka pkg-config libsodium zmq`. On libcrypto errors, add your OpenSSL pkgconfig dir to `PKG_CONFIG_PATH`.
 
 ## Architecture
 
@@ -49,80 +36,66 @@ export PATH=/tmp/goroot/go/bin:$PATH
 Vehicles (WebSocket/TLS) → server/streaming → telemetry/record → datastore/* dispatchers → Backends
 ```
 
-- **cmd/main.go**: entry point - loads config, inits TLS, starts server, handles graceful drain.
-- **config/**: central config for all dispatchers and server settings.
-- **server/streaming/**: WebSocket server and per-vehicle connections (`socket.go`).
-- **telemetry/**: core types - `Producer` interface, `Record`, serialization.
-- **datastore/**: dispatcher implementations (kafka, kinesis, googlepubsub, mqtt, nats, zmq, simple).
-- **connector/**: pluggable data connectors that gate a vehicle's connection (e.g. `vin_allowed`) - see "Data connectors" below.
-- **messages/**: Flatbuffers schemas, identity handling.
-- **protos/**: Protocol Buffer definitions for vehicle data types.
-- **metrics/**: Prometheus and StatsD adapters.
+`cmd/main.go` (entry point, TLS init, graceful drain), `config/`, `server/streaming/` (websocket server + per-vehicle `socket.go`), `telemetry/` (`Producer`, `Record`, serialization), `datastore/<name>/` (dispatchers), `connector/` (connection gating), `messages/` (Flatbuffers, identity), `protos/`, `metrics/` (Prometheus + StatsD).
 
 **Record types** (routed to dispatchers via `records` in config.json): `V` (telemetry), `alerts`, `errors`, `connectivity` (connection state changes).
 
-**Adding a dispatcher:** implement `telemetry.Producer` (Close, Produce, ProcessReliableAck, ReportError), add config handling in `config/config.go`, create `datastore/<name>/`, add integration tests.
+**Adding a dispatcher:** implement `telemetry.Producer`, add config handling in `config/config.go`, create `datastore/<name>/`, add integration tests.
 
-**Testing framework:** Ginkgo v2 + Gomega (`Describe/Context/It`). `datastore/nats/nats_e2e_test.go` runs an embedded in-process NATS server, so it's part of plain `make test`.
+**Testing framework:** Ginkgo v2 + Gomega.
 
-## Configuration
-
-Example: `examples/server_config.json`. Key fields:
-- `records`: record type → dispatcher array.
-- `reliable_ack_sources`: record type → single dispatcher for ack confirmation.
-- `namespace`: topic/subject prefix.
-- `transmit_decoded_records`: `true` for JSON output, `false` for protobuf.
+**Configuration:** see `examples/server_config.json`. `transmit_decoded_records` picks JSON (`true`) vs protobuf (`false`) output; `namespace` prefixes topics/subjects; `reliable_ack_sources` names one dispatcher per record type for ack confirmation.
 
 ## Releases & CI
 
-`.github/workflows/build.yml` `build` job (every push/PR): proto-gen check → format check → `golangci-lint-action` → `make linters` → `make test`. A failing step aborts the rest, so a red run can mask later failures.
+`.github/workflows/build.yml` `build` job (every push/PR): proto-gen check → format check → golangci-lint → `make linters` → `make test`. A failing step aborts the rest, so a red run can mask later failures.
 
-**Release path:** `release-binary.yml` runs only on `workflow_dispatch` with a `version` and an exact `sha` input - there is no `release: created` trigger. It runs behind the `production` GitHub environment (required reviewer: repo admin) and pauses for approval before anything executes. Once approved it runs the same proto-gen/format/lint/test gate as `build.yml`'s `build` job against that exact commit, builds the `linux-amd64` binary, computes its sha256, publishes the GitHub Release (tag targets the given `sha`), and opens a PR in `Teslemetry/servers` bumping `fleet_telemetry_version`/`fleet_telemetry_sha256` in `roles/fleet_telemetry/defaults/main.yaml` - that PR goes through its own review and deploy window, so the binary cut and the host rollout stay distinct steps. The servers PR step needs a `SERVERS_REPO_TOKEN` secret (cross-repo PAT/App token, contents+PRs write on `servers`); without it the workflow logs the pin-bump values to the run summary instead of silently skipping. There is deliberately **no `publish.yml`**: don't recreate one; if Docker publishing is ever wanted, it must trigger `release-binary.yml`'s asset-producing path, not a parallel release.
+**Release path:** `release-binary.yml` runs only on `workflow_dispatch` with `version` + an exact `sha` - there is no `release: created` trigger. It sits behind the `production` environment (admin approval) and pauses before anything executes; then it re-runs the full `build` gate against that commit, builds `linux-amd64`, publishes the GitHub Release, and opens a PR in `Teslemetry/servers` bumping `fleet_telemetry_version`/`fleet_telemetry_sha256`. The binary cut and the host rollout stay distinct steps. The servers PR needs the `SERVERS_REPO_TOKEN` secret (cross-repo token, contents+PRs write); without it the workflow logs the pin values to the run summary rather than skipping silently. There is deliberately **no `publish.yml`** - don't create one; any Docker publishing must hang off `release-binary.yml`, not a parallel release.
 
-**Integration tests are opt-in.** The `integration` job runs only on `workflow_dispatch` or when a PR carries the `run-integration-tests` label (which needs `labeled` in the `pull_request` `types:` list to retrigger on an already-open PR). It's gated off the default path because 5 of its 9 containers (zookeeper, kafka, mqtt, pubsub, kinesis) only exercise dispatchers we don't run - NATS is covered by `make test`'s embedded-server specs instead and isn't in `test/integration` at all.
+**Integration tests are opt-in:** the `integration` job runs only on `workflow_dispatch` or a PR carrying the `run-integration-tests` label (`labeled` must stay in the `pull_request` `types:` list for the label to retrigger an open PR). It's off the default path because most of its containers exercise dispatchers we don't run; NATS isn't in `test/integration` at all.
 
 Sharp edges in the integration/backend setup:
-- `cloud.google.com/go/pubsub` (v1) is deprecated for `.../pubsub/v2`; suppressed with `//nolint:staticcheck` scoped to each import line until someone does the v2 migration. Don't blanket-disable staticcheck.
+- `cloud.google.com/go/pubsub` (v1) is deprecated; suppressed with `//nolint:staticcheck` **scoped to each import line** until someone does the v2 migration. Don't blanket-disable staticcheck.
 - `test/integration/Dockerfile`'s base image Go version must track `go.mod`'s `go` directive - official `golang` images ship `GOTOOLCHAIN=local`, so a mismatch fails `go mod download` outright.
 - `docker-compose.yml`'s `kinesis` is pinned to `localstack/localstack:3.8`; newer tags refuse to start without a paid `LOCALSTACK_AUTH_TOKEN`. Don't float back to `:latest`.
-- `datastore/googlepubsub`'s `Produce` publishes **every** record type to one topic named after `namespace` (not `namespace_<recordtype>` like kafka/mqtt/zmq/kinesis); `test/integration` subscribes once and filters by the `txtype` message attribute.
-- `test/integration/config.json` binds `profiler_host`/`prometheus_metrics_host` to `0.0.0.0` because its HTTP checks run from a separate container. Production defaults these to `127.0.0.1` (`server/monitoring/metrics_server.go`) for security - don't copy the `0.0.0.0` into production config.
+- `datastore/googlepubsub` publishes **every** record type to one topic named after `namespace` (not `namespace_<recordtype>` like kafka/mqtt/zmq/kinesis); `test/integration` subscribes once and filters on the `txtype` attribute.
+- `test/integration/config.json` binds `profiler_host`/`prometheus_metrics_host` to `0.0.0.0` because its checks run from another container. Production defaults these to `127.0.0.1` (`server/monitoring/metrics_server.go`) - don't copy `0.0.0.0` into production config.
 
 ## OpenTelemetry conventions
 
-- **Scope name is always `"fleet-telemetry"`** (`otelapi.Tracer("fleet-telemetry")`). Reuse it; don't introduce per-package scope names.
-- Tracing and the global `TextMapPropagator` (W3C `traceparent`/`tracestate` + baggage) are configured once in `telemetry/tracing.NewProvider` (gated by `Monitoring.OpenTelemetry.Tracing`), which runs before producers are built. Producers just call `otelapi.GetTextMapPropagator().Inject(ctx, carrier)` - a real propagator when tracing is on, a no-op when off. No need to thread config through each dispatcher.
-- The NATS producer creates a **PRODUCER span per publish** and injects trace context into `nats.Msg.Header` (via `natsHeaderCarrier`). Each publish is its own short root trace so consumers (api/cache/webhook) still join a real trace.
-- **No per-connection span** (`server/streaming/socket.go` `ProcessTelemetry`). A vehicle can hold a websocket open for hours, which right-censors "currently connected" trace queries and can silently truncate long sessions at OTel's default span event limit. Connection-lifecycle and message-count debugging is served instead by the `socket_disconnected` log (`close_reason`, `duration_sec`, `RecordsStats`) and the `num_connected_sockets` metric. Do not reintroduce a connection-lifetime span.
-- **Log/trace correlation:** use `logger.Logger.WithContext(ctx)` wherever a log line is emitted inside an active span - it lets the OTel log hook stamp `trace_id`/`span_id` natively and as plain fields. Connection-lifecycle logs are intentionally not span-correlated (there's no connection span); they carry `close_reason`/`RecordsStats` instead.
+- **Scope name is always `"fleet-telemetry"`** (`otelapi.Tracer("fleet-telemetry")`). Don't introduce per-package scope names.
+- Tracing and the global `TextMapPropagator` (W3C `traceparent`/`tracestate` + baggage) are configured once in `telemetry/tracing.NewProvider`, before producers are built. Producers just call `otelapi.GetTextMapPropagator().Inject(ctx, carrier)` - real when tracing is on, no-op when off; don't thread config through each dispatcher.
+- The NATS producer creates a **PRODUCER span per publish** and injects trace context into `nats.Msg.Header`. Each publish is its own short root trace so consumers (api/cache/webhook) still join a real trace.
+- **No per-connection span** in `server/streaming/socket.go`. A vehicle can hold a websocket open for hours, which right-censors "currently connected" trace queries and can silently truncate long sessions at OTel's default span event limit. Connection-lifecycle debugging is served by the `socket_disconnected` log and the `num_connected_sockets` metric instead. Do not reintroduce a connection-lifetime span.
+- **Log/trace correlation:** use `logger.Logger.WithContext(ctx)` for any log line emitted inside an active span, so the OTel log hook can stamp `trace_id`/`span_id`. Connection-lifecycle logs are intentionally not span-correlated.
 
 ## Connection teardown & shutdown
 
-- **`isExpectedDisconnect`** (`server/streaming/socket.go`) classifies benign teardown errors: `websocket.ErrCloseSent`, `net.ErrClosed`, `websocket.CloseError` codes 1000/1001/1005/1006, the `crypto/tls` "failed to send closeNotify alert" message, and raw TCP `ECONNRESET` (matched via `errors.Is(err, syscall.ECONNRESET)`, since a lossy cellular link can drop with a bare RST and no close frame). **Extend this allowlist** rather than reverting to blanket `ErrorLog` when new benign teardown strings appear.
-- Teardown logging is **deduplicated onto the single `socket_disconnected` line**. `sm.recordCloseReason(err)` (mutex-guarded, first-error-wins, since the read loop, writer goroutine, and `Close()` can each observe a teardown error) records the string, and `Close()` attaches it as `close_reason`. Genuinely unexpected errors still get their own `ErrorLog` (`socket_err`/`websocket_close_err`) on top of feeding `close_reason`. `RecordsStatsToLogInfo` emits int values (not strings) so ClickHouse can aggregate without casts.
-- **Graceful drain on SIGTERM/SIGINT** (`cmd/main.go`): `signal.NotifyContext` cancels a context `startServer` selects on. `gracefulShutdown` calls `server.Shutdown` (hijacked websockets aren't tracked by net/http, so this returns fast), then `registry.CloseAllSockets()` → `sm.RequestClose()` on each socket (closing the ws unblocks its read loop into normal teardown, dispatching in-flight records). `waitForSocketsDrain` polls `NumConnectedSockets()` until 0 or `shutdownDrainTimeout` (25s). `RequestClose` records `errServerShutdown` (`"server_shutdown"`) as the close reason. A second signal during drain hard-exits (`startServer` calls the `NotifyContext` stop fn). A signal-driven shutdown returns nil so deferred `shutdownFuncs`/`provider.Shutdown()` flush batched spans; only genuine serve faults `panic` so airbrake's `NotifyOnPanic` fires. **Do not restore an unconditional `panic(startServer(...))`** - that skips the drain and deferred flushes, dropping in-flight telemetry and buffered spans.
+- **`isExpectedDisconnect`** (`server/streaming/socket.go`) allowlists benign teardown errors (close codes 1000/1001/1005/1006, `net.ErrClosed`, the TLS closeNotify message, raw `ECONNRESET` from lossy cellular links, …). **Extend the allowlist** when new benign teardown strings appear; never revert to blanket `ErrorLog`.
+- Teardown logging is **deduplicated onto the single `socket_disconnected` line**: `sm.recordCloseReason(err)` is mutex-guarded and first-error-wins, because the read loop, writer goroutine, and `Close()` can each observe a teardown error. Genuinely unexpected errors still get their own `ErrorLog` on top. `RecordsStatsToLogInfo` emits ints (not strings) so ClickHouse can aggregate without casts.
+- **Graceful drain on SIGTERM/SIGINT** (`cmd/main.go`): `signal.NotifyContext` → `gracefulShutdown` → `server.Shutdown` (returns fast; hijacked websockets aren't tracked by net/http) → `registry.CloseAllSockets()` so each read loop unblocks into normal teardown and dispatches in-flight records → `waitForSocketsDrain` (bounded by `shutdownDrainTimeout`). A second signal hard-exits. A signal-driven shutdown returns nil so deferred `shutdownFuncs`/`provider.Shutdown()` flush batched spans; only genuine serve faults `panic`, so airbrake's `NotifyOnPanic` fires. **Do not restore an unconditional `panic(startServer(...))`** - that skips the drain and deferred flushes, dropping in-flight telemetry and buffered spans.
 
 ## VIN-spoof observability
 
-`telemetry.Record.applyProtoRecordTransforms` always overwrites a payload's claimed `Vin` with the connection-authenticated `record.Vin` (all four record arms do `message.Vin = record.Vin`) - a silent correction, not a drop. The `connectivity` arm additionally calls `record.logVinMismatch(...)` to emit a `WARN "unexpected_vin"` (fields: `socket_id`, `txid`, `record_type`, `claimed_vin`, `connection_vin`) when a non-empty claimed VIN differs from the authenticated one. Rate-capped to once per connection via `BinarySerializer.ShouldLogVinMismatch()` (an `atomic.Bool` on the per-connection serializer). If extended to the `V`/`alerts`/`errors` arms, reuse the same helper and per-connection cap.
+`telemetry.Record.applyProtoRecordTransforms` always overwrites a payload's claimed `Vin` with the connection-authenticated one - a silent correction, not a drop. The `connectivity` arm additionally calls `record.logVinMismatch(...)` to emit a `WARN "unexpected_vin"`, rate-capped to once per connection via `BinarySerializer.ShouldLogVinMismatch()`. If this is extended to the `V`/`alerts`/`errors` arms, reuse the same helper and per-connection cap.
 
 ## Data connectors (`connector/`)
 
-Pluggable checks gate a vehicle's websocket accept in `server/streaming/server.go`'s `isConnectionAllowed` - currently just the `vin_allowed` capability. Default off: with no `data_connectors` config block (or a hand-built `config.Config` with `DataConnector` left nil, as in most `server/streaming` tests), every VIN is admitted. Config surface and behavior are documented in `connector/README.md`.
+Pluggable checks gate a vehicle's websocket accept in `server/streaming/server.go`'s `isConnectionAllowed` - currently just `vin_allowed`. **Default off:** with no `data_connectors` config block (or `DataConnector` left nil, as in most `server/streaming` tests) every VIN is admitted. Config surface and behavior: `connector/README.md`.
 
-Adapters: `file` (watches a JSON allowlist) and `nats` (request-reply over its own dedicated NATS connection - not `datastore/nats`'s publish-producer connection, since that one only exists when NATS is configured as a record dispatcher, and its `natsConn` field is unexported anyway). The NATS adapter's wire contract - subject `vin_allowed`, JSON request `{"vin":...}`, JSON reply `{"allowed":...}`, 1s timeout (`connectornats.VinAllowedTimeout`, a var so tests can shrink it) - is pinned to match an externally-deployed responder; changing it is a breaking cross-service change. It fails OPEN (admits the vehicle) on any check failure - no responder, timeout, or malformed reply - logging `nats_connector_vin_allowed_fail_open` and incrementing `data_connector_nats_fail_open_count`, since customer telemetry availability outranks enforcement latency and denying is best-effort anyway.
+Adapters are `file` (watches a JSON allowlist) and `nats`, which uses its **own dedicated NATS connection** - not `datastore/nats`'s producer connection, which only exists when NATS is configured as a record dispatcher and is unexported anyway. The nats adapter's wire contract (subject `vin_allowed`, JSON `{"vin":...}` → `{"allowed":...}`, `VinAllowedTimeout`) is pinned to an externally-deployed responder; changing it is a breaking cross-service change. It **fails OPEN** on any check failure - no responder, timeout, malformed reply - logging `nats_connector_vin_allowed_fail_open` and incrementing `data_connector_nats_fail_open_count`, since customer telemetry availability outranks enforcement latency and denying is best-effort anyway.
 
-This fork drops upstream's `grpc`/`http`/`redis` connector adapters to avoid promoting `google.golang.org/grpc` to a direct dependency and pulling in an unused `redis` client; pull them back from upstream commit `1371902` if a future capability genuinely needs one.
+This fork drops upstream's `grpc`/`http`/`redis` connector adapters to keep `google.golang.org/grpc` out of the direct dependencies and avoid an unused redis client; pull them back from upstream commit `1371902` if a future capability genuinely needs one.
 
 ## NATS test harness (`datastore/nats/`)
 
-`datastore/nats` is our only production dispatcher, covered end-to-end by an **in-process embedded NATS server** (`nats-io/nats-server/v2`, test-only) rather than docker-compose - so it runs in plain `make test` with no Docker, in ~2-4s. Pinned to `v2.10.29`; don't bump it opportunistically outside a dedicated change.
+Covered end-to-end by an **in-process embedded NATS server** (`nats-io/nats-server/v2`, test-only) rather than docker-compose, so it runs in plain `make test` with no Docker. Pinned to `v2.10.29`; don't bump it opportunistically outside a dedicated change.
 
-- **Build `*telemetry.Record`s the real way:** `messages.StreamMessage{...}.ToBytes()` → `telemetry.NewRecord(...)`, as `datastore/mqtt/mqtt_test.go` does. This exercises the real decode + `applyRecordTransforms` path (VIN stamping/warning); don't hand-construct a `Record`. `BinarySerializer.Deserialize` skips the sender-ID check when `DispatchRules[txType]` is populated, so tests only need that entry, not an exact `SenderID`.
-- **Clean `Producer.Close()` must not panic.** `NatsConnect`'s `ClosedHandler` panics on an unexpected CLOSED transition, but `Close()` sets an `*atomic.Bool` `closing` field *before* tearing down `natsConn`, so the handler only panics on a genuinely unexpected close. The flag is written synchronously before the underlying `nats.Conn.Close()`, so it's correct regardless of callback races. Regression covered by `nats_close_test.go` in a **subprocess** (a panic in nats.go's async callback goroutine can't be `recover()`-ed and would crash the whole test binary).
-- **`hook.LastEntry()` is unreliable here:** NATS connection-state handlers (`nats_connected`/`reconnected`/`disconnected`) log from a background goroutine and can land after the line under test. Search `hook.AllEntries()` for the expected `Message` (see `findLogEntry`).
-- **Tracer delegation is process-global and one-shot:** OTel's global `TracerProvider` delegates to the first real provider exactly once (`delegateTraceOnce`), and nats.go's package-level `tracer` is vended at package init. So any spec asserting "no trace headers when tracing is unconfigured" must run *before* any spec that ever sets a real provider - handled by declaration order. Don't add a tracer-configuring spec earlier in this package's files without accounting for it.
-- **The "buffers publishes across a brief server outage" spec races core NATS's lack of durability, not reconnect speed.** A restarted core-NATS server (no JetStream) only routes to subscribers already registered when the publish is processed; if the producer reconnects and flushes before the subscriber resubscribes, the message is silently dropped (normal at-most-once behavior). The fix removes the race, not the timeout: park the producer connection in `RECONNECTING` with an effectively-infinite `ReconnectWait` (via the `NatsConnect` seam), confirm the subscriber is *actually* resubscribed with a round-trip probe, then call `producerConn.ForceReconnect()` - `doReconnect` runs `resendSubscriptions()` before flushing pending items. If this flakes again, suspect this ordering race before enlarging any `Eventually` window.
+- **Build `*telemetry.Record`s the real way:** `messages.StreamMessage{...}.ToBytes()` → `telemetry.NewRecord(...)` (as `datastore/mqtt/mqtt_test.go` does), which exercises the real decode + transform path. Don't hand-construct a `Record`. `Deserialize` skips the sender-ID check when `DispatchRules[txType]` is populated, so tests need only that entry.
+- **A clean `Producer.Close()` must not panic.** `NatsConnect`'s `ClosedHandler` panics on an unexpected CLOSED transition; `Close()` sets the `closing` flag first so it only fires on a genuinely unexpected close. Guarded by `nats_close_test.go`, which runs in a **subprocess** because a panic in a nats.go async callback goroutine can't be recovered and would kill the test binary.
+- **`hook.LastEntry()` is unreliable here:** NATS connection-state handlers log from a background goroutine and can land after the line under test. Use `findLogEntry` over `hook.AllEntries()`.
+- **Tracer delegation is process-global and one-shot:** OTel's global `TracerProvider` delegates to the first real provider exactly once, and nats.go's package-level `tracer` is vended at package init. Any spec asserting "no trace headers when tracing is unconfigured" must therefore run *before* any spec that sets a real provider - currently handled by declaration order. Account for this before adding a tracer-configuring spec earlier in the package.
+- **The "buffers publishes across a brief server outage" spec races core NATS's lack of durability, not reconnect speed.** A restarted core-NATS server only routes to subscribers already registered when the publish is processed, so an early reconnect+flush silently drops the message (normal at-most-once behavior). The spec removes the race by parking the producer in `RECONNECTING`, probing that the subscriber has actually resubscribed, then calling `ForceReconnect()`. If it flakes, suspect this ordering rather than enlarging any `Eventually` window.
 
 ## Maintaining this file
 
