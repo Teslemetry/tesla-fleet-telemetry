@@ -117,6 +117,22 @@ var _ = Describe("Prometheus Metric Adapter", Ordered, func() {
 		})
 	})
 
+	Context("float counter", func() {
+		It("adds a fractional value under an OpenTelemetry-style dotted name", func() {
+			counter := metricCollector.RegisterFloatCounter(adapter.CollectorOptions{
+				Name:   "api.client.cost",
+				Help:   "help text",
+				Labels: []string{"vehicle.vin"},
+				Unit:   "{credit}",
+			})
+
+			counter.Add(2.0/150.0, map[string]string{"vehicle.vin": "TEST123"})
+
+			metrics := getMetrics()
+			Expect(metrics).To(ContainSubstring("api_client_cost{vehicle_vin=\"TEST123\"} 0.013333"))
+		})
+	})
+
 	Context("gauge", func() {
 		It("handles no labels", func() {
 			metricCollector.RegisterGauge(adapter.CollectorOptions{

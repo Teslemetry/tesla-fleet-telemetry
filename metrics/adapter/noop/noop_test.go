@@ -39,6 +39,18 @@ var _ = Describe("No-Op Metric Adapter", Ordered, func() {
 		})
 	})
 
+	Context("float counter", func() {
+		It("adds", func() {
+			counter := metricCollector.RegisterFloatCounter(adapter.CollectorOptions{
+				Name:   "adder_float_counter",
+				Help:   "help text",
+				Labels: []string{},
+			})
+
+			counter.Add(0.5, map[string]string{})
+		})
+	})
+
 	Context("gauge", func() {
 		It("adds", func() {
 			gauge := metricCollector.RegisterGauge(adapter.CollectorOptions{

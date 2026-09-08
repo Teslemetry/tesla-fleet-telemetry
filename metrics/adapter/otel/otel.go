@@ -169,6 +169,20 @@ func (c *Collector) RegisterCounter(options adapter.CollectorOptions) adapter.Co
 	return &Counter{counter: counter}
 }
 
+// RegisterFloatCounter creates a new float-valued counter for OpenTelemetry
+func (c *Collector) RegisterFloatCounter(options adapter.CollectorOptions) adapter.FloatCounter {
+	counter, err := c.meter.Float64Counter(
+		options.Name,
+		metric.WithDescription(options.Help),
+		metric.WithUnit(options.Unit),
+	)
+	if err != nil {
+		c.logger.ErrorLog("otel_float_counter_registration_failed", err, logrus.LogInfo{"name": options.Name})
+		return &FloatCounter{counter: nil}
+	}
+	return &FloatCounter{counter: counter}
+}
+
 // RegisterGauge creates a new gauge for OpenTelemetry
 func (c *Collector) RegisterGauge(options adapter.CollectorOptions) adapter.Gauge {
 	return NewGauge(c.meter, options.Name, options.Help)

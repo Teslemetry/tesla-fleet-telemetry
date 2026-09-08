@@ -40,6 +40,14 @@ func (c *Collector) RegisterCounter(options adapter.CollectorOptions) adapter.Co
 	}
 }
 
+// RegisterFloatCounter creates a new float-valued counter for Statsd
+func (c *Collector) RegisterFloatCounter(options adapter.CollectorOptions) adapter.FloatCounter {
+	return &FloatCounter{
+		name:   options.Name,
+		client: c.client,
+	}
+}
+
 // RegisterGauge creates a new gauge for Statsd
 func (c *Collector) RegisterGauge(options adapter.CollectorOptions) adapter.Gauge {
 	return &Gauge{

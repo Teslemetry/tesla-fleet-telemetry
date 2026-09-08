@@ -13,6 +13,11 @@ func (p *Collector) RegisterCounter(_ adapter.CollectorOptions) adapter.Counter 
 	return &Counter{}
 }
 
+// RegisterFloatCounter returns a noop FloatCounter
+func (p *Collector) RegisterFloatCounter(_ adapter.CollectorOptions) adapter.FloatCounter {
+	return &FloatCounter{}
+}
+
 // RegisterGauge returns a noop Gauge
 func (p *Collector) RegisterGauge(_ adapter.CollectorOptions) adapter.Gauge {
 	return &Gauge{}

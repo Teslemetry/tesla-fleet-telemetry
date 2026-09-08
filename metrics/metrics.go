@@ -55,6 +55,7 @@ type StatsdConfig struct {
 // MetricCollector provides means to create new collectors
 type MetricCollector interface {
 	RegisterCounter(adapter.CollectorOptions) adapter.Counter
+	RegisterFloatCounter(adapter.CollectorOptions) adapter.FloatCounter
 	RegisterGauge(adapter.CollectorOptions) adapter.Gauge
 	RegisterTimer(adapter.CollectorOptions) adapter.Timer
 	Shutdown()

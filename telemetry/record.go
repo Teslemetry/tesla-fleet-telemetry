@@ -144,6 +144,8 @@ func (record *Record) SignalsCount() int {
 		return len(payload.GetData())
 	case *protos.VehicleAlerts:
 		return len(payload.GetAlerts())
+	case *protos.VehicleErrors:
+		return len(payload.GetErrors())
 	default:
 		return 0
 	}

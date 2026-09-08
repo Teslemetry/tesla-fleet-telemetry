@@ -41,6 +41,28 @@ func (c *Collector) RegisterCounter(options adapter.CollectorOptions) adapter.Co
 	}
 }
 
+// RegisterFloatCounter registers a new float-valued counter with Prometheus
+func (c *Collector) RegisterFloatCounter(options adapter.CollectorOptions) adapter.FloatCounter {
+	labels := make([]string, 0, len(options.Labels))
+	for _, label := range options.Labels {
+		labels = append(labels, sanitizeName(label))
+	}
+
+	counter := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: sanitizeName(options.Name),
+			Help: options.Help,
+		},
+		labels,
+	)
+
+	c.register(counter)
+
+	return &FloatCounter{
+		counter,
+	}
+}
+
 // RegisterGauge registers a new gauge with Prometheus
 func (c *Collector) RegisterGauge(options adapter.CollectorOptions) adapter.Gauge {
 	gauge := prometheus.NewGaugeVec(
