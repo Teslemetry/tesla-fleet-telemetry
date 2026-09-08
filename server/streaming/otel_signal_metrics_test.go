@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -25,14 +26,14 @@ import (
 	"github.com/teslamotors/fleet-telemetry/telemetry"
 )
 
-// signalCountOTLPSubprocessEnvVar re-execs this test binary to run only the
+// signalMetricsOTLPSubprocessEnvVar re-execs this test binary to run only the
 // export check in its own process. server/streaming's metricsRegistry is
 // registered exactly once per process (sync.Once), and every other spec in
 // this package's test binary also builds a SocketManager - so sharing a
 // process risks binding metricsRegistry to whichever collector wins that
 // race first, not the OTLP receiver this test needs to observe. Mirrors the
 // subprocess pattern in datastore/nats/nats_close_test.go.
-const signalCountOTLPSubprocessEnvVar = "FLEET_TELEMETRY_OTEL_SIGNAL_COUNT_SUBPROCESS"
+const signalMetricsOTLPSubprocessEnvVar = "FLEET_TELEMETRY_OTEL_SIGNAL_METRICS_SUBPROCESS"
 
 // fakeOTLPMetricsReceiver is a minimal in-process OTLP/gRPC metrics sink -
 // the same wire endpoint production's monitoring.otel config points the
@@ -78,6 +79,32 @@ func (f *fakeOTLPMetricsReceiver) gaugeValue(name string) (value int64, attrs ma
 	return value, attrs, ok
 }
 
+// sumValue returns the last observed double value, attributes and unit for a
+// monotonic sum metric name, or ok=false if it was never exported.
+func (f *fakeOTLPMetricsReceiver) sumValue(name string) (value float64, attrs map[string]string, unit string, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, req := range f.requests {
+		for _, rm := range req.ResourceMetrics {
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if m.Name != name {
+						continue
+					}
+					sum := m.GetSum()
+					if sum == nil || len(sum.DataPoints) == 0 {
+						continue
+					}
+					dp := sum.DataPoints[len(sum.DataPoints)-1]
+					value, unit, ok = dp.GetAsDouble(), m.GetUnit(), true
+					attrs = attrsToMap(dp.Attributes)
+				}
+			}
+		}
+	}
+	return value, attrs, unit, ok
+}
+
 func (f *fakeOTLPMetricsReceiver) hasMetric(name string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -103,25 +130,26 @@ func attrsToMap(kvs []*commonpb.KeyValue) map[string]string {
 	return attrs
 }
 
-// TestSignalCountExportsOverOTLP reproduces (pre-fix) and proves (post-fix)
-// that signal_count is exported over the real OTLP path when a normal,
-// non-rate-limited vehicle record is processed - the traffic pattern that
-// makes up virtually all production connections.
-func TestSignalCountExportsOverOTLP(t *testing.T) {
-	if os.Getenv(signalCountOTLPSubprocessEnvVar) == "1" {
-		runSignalCountOTLPSubprocessBody(t)
+// TestSignalMetricsExportOverOTLP proves that both metrics emitted at the
+// trackSignalUsage seam - signal_count and the per-VIN api.client.cost - are
+// exported over the real OTLP path when a normal, non-rate-limited vehicle
+// record is processed, the traffic pattern that makes up virtually all
+// production connections.
+func TestSignalMetricsExportOverOTLP(t *testing.T) {
+	if os.Getenv(signalMetricsOTLPSubprocessEnvVar) == "1" {
+		runSignalMetricsOTLPSubprocessBody(t)
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=^TestSignalCountExportsOverOTLP$", "-test.v") //nolint:gosec
-	cmd.Env = append(os.Environ(), signalCountOTLPSubprocessEnvVar+"=1")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSignalMetricsExportOverOTLP$", "-test.v") //nolint:gosec
+	cmd.Env = append(os.Environ(), signalMetricsOTLPSubprocessEnvVar+"=1")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("signal_count OTLP export check failed in subprocess:\n%s", output)
+		t.Fatalf("signal metrics OTLP export check failed in subprocess:\n%s", output)
 	}
 }
 
-func runSignalCountOTLPSubprocessBody(t *testing.T) {
+func runSignalMetricsOTLPSubprocessBody(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen: %v", err)
@@ -183,7 +211,7 @@ func runSignalCountOTLPSubprocessBody(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if receiver.hasMetric("record_total") && receiver.hasMetric("signal_count") {
+		if receiver.hasMetric("record_total") && receiver.hasMetric("signal_count") && receiver.hasMetric("api.client.cost") {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -202,5 +230,25 @@ func runSignalCountOTLPSubprocessBody(t *testing.T) {
 	}
 	if got := attrs["record_type"]; got != "V" {
 		t.Fatalf("signal_count record_type attribute = %q, want %q", got, "V")
+	}
+
+	cost, costAttrs, unit, ok := receiver.sumValue("api.client.cost")
+	if !ok {
+		t.Fatal("api.client.cost never arrived over OTLP")
+	}
+	if wantCost := float64(wantSignals) / 150.0; cost != wantCost {
+		t.Fatalf("api.client.cost = %v, want %v", cost, wantCost)
+	}
+	if unit != "{credit}" {
+		t.Fatalf("api.client.cost unit = %q, want %q", unit, "{credit}")
+	}
+	wantAttrs := map[string]string{
+		"teslemetry.cost.charged_as":  "streaming_signal",
+		"teslemetry.cost.endpoint":    "fleet_telemetry",
+		"teslemetry.cost.record_type": "data",
+		"vehicle.vin":                 requestIdentity.DeviceID,
+	}
+	if !reflect.DeepEqual(costAttrs, wantAttrs) {
+		t.Fatalf("api.client.cost attributes = %v, want exactly %v", costAttrs, wantAttrs)
 	}
 }
