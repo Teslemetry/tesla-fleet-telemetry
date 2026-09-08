@@ -123,13 +123,13 @@ var _ = Describe("Prometheus Metric Adapter", Ordered, func() {
 				Name:   "api.client.cost",
 				Help:   "help text",
 				Labels: []string{"vehicle.vin"},
-				Unit:   "{credit}",
+				Unit:   "USD",
 			})
 
-			counter.Add(2.0/150.0, map[string]string{"vehicle.vin": "TEST123"})
+			counter.Add(2.0/150000.0, map[string]string{"vehicle.vin": "TEST123"})
 
 			metrics := getMetrics()
-			Expect(metrics).To(ContainSubstring("api_client_cost{vehicle_vin=\"TEST123\"} 0.013333"))
+			Expect(metrics).To(ContainSubstring("api_client_cost{vehicle_vin=\"TEST123\"} 1.3333333333333333e-05"))
 		})
 	})
 

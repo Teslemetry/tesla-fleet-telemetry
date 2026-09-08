@@ -236,14 +236,15 @@ func runSignalMetricsOTLPSubprocessBody(t *testing.T) {
 	if !ok {
 		t.Fatal("api.client.cost never arrived over OTLP")
 	}
-	if wantCost := float64(wantSignals) / 150.0; cost != wantCost {
+	if wantCost := float64(wantSignals) / 150000.0; cost != wantCost {
 		t.Fatalf("api.client.cost = %v, want %v", cost, wantCost)
 	}
-	if unit != "{credit}" {
-		t.Fatalf("api.client.cost unit = %q, want %q", unit, "{credit}")
+	if unit != "USD" {
+		t.Fatalf("api.client.cost unit = %q, want %q", unit, "USD")
 	}
 	wantAttrs := map[string]string{
 		"teslemetry.cost.charged_as":  "streaming_signal",
+		"teslemetry.cost.currency":    "USD",
 		"teslemetry.cost.endpoint":    "fleet_telemetry",
 		"teslemetry.cost.record_type": "data",
 		"vehicle.vin":                 requestIdentity.DeviceID,
