@@ -37,15 +37,15 @@ const WriteLoopDeadline = 10 * time.Second
 // the graceful-drain path (SIGTERM/SIGINT) rather than a vehicle-initiated close.
 var errServerShutdown = errors.New("server_shutdown")
 
-// teslaSignalsPerCredit is Tesla's streaming rate: 150 signals per credit-equivalent (US$0.001).
-const teslaSignalsPerCredit = 150.0
+// teslaSignalsPerDollar is Tesla's streaming rate: 150,000 signals per US$1.
+const teslaSignalsPerDollar = 150000.0
 
-// costRecordTypes maps a record's TxType to the teslemetry.cost.record_type attribute value the
+// costRecordTypes maps a record's TxType to the teslemetry.cost.type attribute value the
 // api service uses. Connectivity is server-generated, so Tesla does not bill it.
 var costRecordTypes = map[string]string{
-	"V":      "data",
-	"alerts": "alerts",
-	"errors": "errors",
+	"V":      "streaming_data",
+	"alerts": "streaming_alerts",
+	"errors": "streaming_errors",
 }
 
 // SocketManager is a struct responsible for managing the socket connection with the clients
@@ -344,18 +344,16 @@ func (sm *SocketManager) trackSignalUsage(record *telemetry.Record) {
 }
 
 // trackSignalCost attributes what Tesla charges for these signals to the connection-authenticated
-// VIN. The metric name, attribute names and credit unit are shared with the api service's own
-// api.client.cost entries so the two sum into one per-vehicle cost figure.
+// VIN. The metric name and attribute names are shared with the api service's own tesla.cost
+// entries (vehicle_data, commands, wakes, energy) so all sources sum into one per-vehicle figure.
 func trackSignalCost(vin, txType string, signals int) {
-	recordType, billable := costRecordTypes[txType]
+	costType, billable := costRecordTypes[txType]
 	if !billable || signals == 0 {
 		return
 	}
-	metricsRegistry.clientCost.Add(float64(signals)/teslaSignalsPerCredit, map[string]string{
-		"teslemetry.cost.charged_as":  "streaming_signal",
-		"teslemetry.cost.endpoint":    "fleet_telemetry",
-		"teslemetry.cost.record_type": recordType,
-		"vehicle.vin":                 vin,
+	metricsRegistry.clientCost.Add(float64(signals)/teslaSignalsPerDollar, map[string]string{
+		"teslemetry.cost.type": costType,
+		"teslemetry.cost.id":   vin,
 	})
 }
 
@@ -544,9 +542,9 @@ func registerMetrics(metricsCollector metrics.MetricCollector) {
 	})
 
 	metricsRegistry.clientCost = metricsCollector.RegisterFloatCounter(adapter.CollectorOptions{
-		Name:   "api.client.cost",
-		Help:   "Tesla cost in credit-equivalents (1 credit-equivalent = US$0.001) attributed per vehicle",
-		Labels: []string{"teslemetry.cost.charged_as", "teslemetry.cost.endpoint", "teslemetry.cost.record_type", "vehicle.vin"},
-		Unit:   "{credit}",
+		Name:   "tesla.cost",
+		Help:   "Tesla cost in US dollars attributed per vehicle",
+		Labels: []string{"teslemetry.cost.type", "teslemetry.cost.id"},
+		Unit:   "USD",
 	})
 }

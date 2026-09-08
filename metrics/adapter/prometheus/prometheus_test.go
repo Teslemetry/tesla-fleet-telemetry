@@ -120,16 +120,16 @@ var _ = Describe("Prometheus Metric Adapter", Ordered, func() {
 	Context("float counter", func() {
 		It("adds a fractional value under an OpenTelemetry-style dotted name", func() {
 			counter := metricCollector.RegisterFloatCounter(adapter.CollectorOptions{
-				Name:   "api.client.cost",
+				Name:   "tesla.cost",
 				Help:   "help text",
-				Labels: []string{"vehicle.vin"},
-				Unit:   "{credit}",
+				Labels: []string{"teslemetry.cost.id"},
+				Unit:   "USD",
 			})
 
-			counter.Add(2.0/150.0, map[string]string{"vehicle.vin": "TEST123"})
+			counter.Add(2.0/150000.0, map[string]string{"teslemetry.cost.id": "TEST123"})
 
 			metrics := getMetrics()
-			Expect(metrics).To(ContainSubstring("api_client_cost{vehicle_vin=\"TEST123\"} 0.013333"))
+			Expect(metrics).To(ContainSubstring("tesla_cost{teslemetry_cost_id=\"TEST123\"} 1.3333333333333333e-05"))
 		})
 	})
 
