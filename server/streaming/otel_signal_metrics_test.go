@@ -131,7 +131,7 @@ func attrsToMap(kvs []*commonpb.KeyValue) map[string]string {
 }
 
 // TestSignalMetricsExportOverOTLP proves that both metrics emitted at the
-// trackSignalUsage seam - signal_count and the per-VIN api.client.cost - are
+// trackSignalUsage seam - signal_count and the per-VIN tesla.cost - are
 // exported over the real OTLP path when a normal, non-rate-limited vehicle
 // record is processed, the traffic pattern that makes up virtually all
 // production connections.
@@ -211,7 +211,7 @@ func runSignalMetricsOTLPSubprocessBody(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if receiver.hasMetric("record_total") && receiver.hasMetric("signal_count") && receiver.hasMetric("api.client.cost") {
+		if receiver.hasMetric("record_total") && receiver.hasMetric("signal_count") && receiver.hasMetric("tesla.cost") {
 			break
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -232,24 +232,21 @@ func runSignalMetricsOTLPSubprocessBody(t *testing.T) {
 		t.Fatalf("signal_count record_type attribute = %q, want %q", got, "V")
 	}
 
-	cost, costAttrs, unit, ok := receiver.sumValue("api.client.cost")
+	cost, costAttrs, unit, ok := receiver.sumValue("tesla.cost")
 	if !ok {
-		t.Fatal("api.client.cost never arrived over OTLP")
+		t.Fatal("tesla.cost never arrived over OTLP")
 	}
 	if wantCost := float64(wantSignals) / 150000.0; cost != wantCost {
-		t.Fatalf("api.client.cost = %v, want %v", cost, wantCost)
+		t.Fatalf("tesla.cost = %v, want %v", cost, wantCost)
 	}
 	if unit != "USD" {
-		t.Fatalf("api.client.cost unit = %q, want %q", unit, "USD")
+		t.Fatalf("tesla.cost unit = %q, want %q", unit, "USD")
 	}
 	wantAttrs := map[string]string{
-		"teslemetry.cost.charged_as":  "streaming_signal",
-		"teslemetry.cost.currency":    "USD",
-		"teslemetry.cost.endpoint":    "fleet_telemetry",
-		"teslemetry.cost.record_type": "data",
-		"vehicle.vin":                 requestIdentity.DeviceID,
+		"teslemetry.cost.type": "streaming_data",
+		"teslemetry.cost.id":   requestIdentity.DeviceID,
 	}
 	if !reflect.DeepEqual(costAttrs, wantAttrs) {
-		t.Fatalf("api.client.cost attributes = %v, want exactly %v", costAttrs, wantAttrs)
+		t.Fatalf("tesla.cost attributes = %v, want exactly %v", costAttrs, wantAttrs)
 	}
 }

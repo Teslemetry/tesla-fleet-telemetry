@@ -190,22 +190,19 @@ var _ = Describe("Streaming signal cost", func() {
 		metricsRegistry = saved
 	})
 
-	It("registers api.client.cost in USD", func() {
-		Expect(collector.options["api.client.cost"].Unit).To(Equal("USD"))
+	It("registers tesla.cost in USD", func() {
+		Expect(collector.options["tesla.cost"].Unit).To(Equal("USD"))
 	})
 
 	It("charges a data record its signal count over the Tesla signals-per-dollar rate", func() {
 		manager.trackSignalUsage(dataRecord(4))
 
-		entries := collector.entriesFor("api.client.cost")
+		entries := collector.entriesFor("tesla.cost")
 		Expect(entries).To(HaveLen(1))
 		Expect(entries[0].value).To(BeNumerically("~", 4.0/150000.0, 1e-12))
 		Expect(entries[0].labels).To(Equal(adapter.Labels{
-			"teslemetry.cost.charged_as":  "streaming_signal",
-			"teslemetry.cost.currency":    "USD",
-			"teslemetry.cost.endpoint":    "fleet_telemetry",
-			"teslemetry.cost.record_type": "data",
-			"vehicle.vin":                 costTestVin,
+			"teslemetry.cost.type": "streaming_data",
+			"teslemetry.cost.id":   costTestVin,
 		}))
 	})
 
@@ -222,11 +219,11 @@ var _ = Describe("Streaming signal cost", func() {
 
 		manager.trackSignalUsage(record)
 
-		entries := collector.entriesFor("api.client.cost")
+		entries := collector.entriesFor("tesla.cost")
 		Expect(entries).To(HaveLen(1))
 		Expect(entries[0].value).To(BeNumerically("~", 3.0/150000.0, 1e-12))
-		Expect(entries[0].labels["teslemetry.cost.record_type"]).To(Equal("alerts"))
-		Expect(entries[0].labels["vehicle.vin"]).To(Equal(costTestVin))
+		Expect(entries[0].labels["teslemetry.cost.type"]).To(Equal("streaming_alerts"))
+		Expect(entries[0].labels["teslemetry.cost.id"]).To(Equal(costTestVin))
 	})
 
 	It("counts the elements of an errors record", func() {
@@ -241,10 +238,10 @@ var _ = Describe("Streaming signal cost", func() {
 
 		manager.trackSignalUsage(record)
 
-		entries := collector.entriesFor("api.client.cost")
+		entries := collector.entriesFor("tesla.cost")
 		Expect(entries).To(HaveLen(1))
 		Expect(entries[0].value).To(BeNumerically("~", 2.0/150000.0, 1e-12))
-		Expect(entries[0].labels["teslemetry.cost.record_type"]).To(Equal("errors"))
+		Expect(entries[0].labels["teslemetry.cost.type"]).To(Equal("streaming_errors"))
 	})
 
 	It("charges nothing for a connectivity record", func() {
@@ -258,7 +255,7 @@ var _ = Describe("Streaming signal cost", func() {
 
 		manager.trackSignalUsage(record)
 
-		Expect(collector.entriesFor("api.client.cost")).To(BeEmpty())
+		Expect(collector.entriesFor("tesla.cost")).To(BeEmpty())
 	})
 
 	It("reconciles the data cost back to signal_count", func() {
@@ -270,7 +267,7 @@ var _ = Describe("Streaming signal cost", func() {
 			Alerts: []*protos.VehicleAlert{{Name: "Alert1", StartedAt: timestamppb.Now()}},
 		}))
 
-		cost := collector.sumFor("api.client.cost", "teslemetry.cost.record_type", "data")
+		cost := collector.sumFor("tesla.cost", "teslemetry.cost.type", "streaming_data")
 		signals := collector.sumFor("signal_count", "record_type", "V")
 		Expect(cost * teslaSignalsPerDollar).To(BeNumerically("~", signals, 1e-9))
 		Expect(signals).To(BeNumerically("==", 40))
