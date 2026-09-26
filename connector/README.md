@@ -8,6 +8,12 @@ Currently available capabilities:
 - `vin_allowed`: check whether a VIN is allowed to connect to the server. Checked once
   per incoming websocket connection, before it's accepted.
 
+A connector that is configured but fails to construct never degrades to "not
+configured": it logs `data_connector_configure_error`, increments
+`data_connector_configure_error_count{connector}`, and each of its capability checks then
+fails open with a `data_connector_unavailable_fail_open` error log and a
+`data_connector_unavailable_fail_open_count{connector}` increment.
+
 ## Available Connectors
 
 ### File
@@ -53,6 +59,12 @@ admitted, a `nats_connector_vin_allowed_fail_open` error is logged, and the
 `data_connector_nats_fail_open_count` metric is incremented. Customer telemetry
 availability outranks enforcement latency here, and cleaning up an already-admitted,
 disallowed vehicle is best-effort.
+
+The connection retries forever (1s apart) from startup onward, so a NATS server that
+isn't listening yet when fleet-telemetry boots doesn't disable the connector: until the
+first connect lands (and during any later disconnect) every check fails open immediately
+with the same log and metric, and enforcement resumes once connected. A
+`nats_connector_connect_pending` warning marks a startup that began disconnected.
 
 - `capabilities`: `[]string` capabilities to use the data connector for.
 - `url`: `string` NATS server URL.

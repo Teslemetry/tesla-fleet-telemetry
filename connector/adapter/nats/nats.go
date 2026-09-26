@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -30,6 +31,15 @@ const traceparentHeader = "traceparent"
 // responder never blocks a vehicle's websocket accept path. Overridable (var,
 // not const) so tests can shrink it instead of waiting out the full second.
 var VinAllowedTimeout = time.Second
+
+// ReconnectWait is the pause between connection attempts, both at startup and
+// after losing an established connection. Kept short because every vehicle
+// admitted while disconnected bypasses enforcement.
+var ReconnectWait = time.Second
+
+// ErrNotConnected is returned (alongside a fail-open admit) when a check runs
+// while the connection is down, including before the first connect succeeds.
+var ErrNotConnected = errors.New("nats connector not connected")
 
 // NatsConnect is replaced in tests to exercise connection-error paths without
 // a live NATS server, mirroring datastore/nats's seam of the same name.
@@ -83,9 +93,31 @@ type vinAllowedResponse struct {
 func NewConnector(config Config, metricsCollector metrics.MetricCollector, logger *logrus.Logger) (*Connector, error) {
 	registerMetricsOnce(metricsCollector)
 
-	conn, err := NatsConnect(config.URL, nats.Name(config.Name))
+	// RetryOnFailedConnect keeps a NATS server that isn't listening yet (e.g.
+	// fleet-telemetry booting ahead of a co-located nats-server) from failing
+	// construction, which would otherwise leave vin_allowed unenforced for the
+	// life of the process. Checks fail open until the first connect lands.
+	conn, err := NatsConnect(
+		config.URL,
+		nats.Name(config.Name),
+		nats.RetryOnFailedConnect(true),
+		nats.MaxReconnects(-1),
+		nats.ReconnectWait(ReconnectWait),
+		nats.ConnectHandler(func(_ *nats.Conn) {
+			logger.ActivityLog("nats_connector_connected", logrus.LogInfo{})
+		}),
+		nats.ReconnectHandler(func(_ *nats.Conn) {
+			logger.ActivityLog("nats_connector_reconnected", logrus.LogInfo{})
+		}),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			logger.ActivityLog("nats_connector_disconnected", logrus.LogInfo{"error": err})
+		}),
+	)
 	if err != nil {
 		return nil, err
+	}
+	if !conn.IsConnected() {
+		logger.Log(logrus.WARN, "nats_connector_connect_pending", logrus.LogInfo{"url": config.URL, "message": "NATS not reachable yet; vin_allowed fails open until connected"})
 	}
 
 	return &Connector{
@@ -95,14 +127,20 @@ func NewConnector(config Config, metricsCollector metrics.MetricCollector, logge
 }
 
 // VinAllowed asks the vin_allowed responder whether vin may connect. Any
-// failure to get a well-formed reply within the timeout - no responder, a
-// timeout, or a malformed body - fails OPEN (admits the vehicle): customer
+// failure to get a well-formed reply within the timeout - no connection, no
+// responder, a timeout, or a malformed body - fails OPEN (admits the vehicle): customer
 // telemetry availability outranks enforcement latency here, and cleaning up an
 // already-admitted, disallowed vehicle is best-effort.
 func (c *Connector) VinAllowed(vin string) (bool, error) {
 	serverMetricsRegistry.requestCount.Inc(nil)
 
 	traceID, traceparent := newTraceparent()
+
+	// Short-circuit rather than let the request sit in the reconnect buffer
+	// until the timeout, which would stall every websocket accept by that long.
+	if !c.conn.IsConnected() {
+		return c.failOpen(vin, traceID, ErrNotConnected), ErrNotConnected
+	}
 
 	payload, err := json.Marshal(vinAllowedRequest{Vin: vin})
 	if err != nil {

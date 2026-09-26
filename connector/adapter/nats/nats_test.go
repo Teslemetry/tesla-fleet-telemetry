@@ -1,7 +1,11 @@
 package nats_test
 
 import (
+	"fmt"
+	"net"
+	"net/url"
 	"regexp"
+	"strconv"
 	"time"
 
 	natsclient "github.com/nats-io/nats.go"
@@ -32,6 +36,26 @@ func startNatsServer() *natsserver.Server {
 	opts.NoLog = true
 	opts.NoSigs = true
 	return natstest.RunServer(opts)
+}
+
+// startNatsServerAt starts an in-process NATS server on rawURL's host:port.
+func startNatsServerAt(rawURL string) *natsserver.Server {
+	u, err := url.Parse(rawURL)
+	Expect(err).NotTo(HaveOccurred())
+	port, err := strconv.Atoi(u.Port())
+	Expect(err).NotTo(HaveOccurred())
+	opts := &natsserver.Options{Host: u.Hostname(), Port: port}
+	opts.NoLog = true
+	opts.NoSigs = true
+	return natstest.RunServer(opts)
+}
+
+// freePort returns a loopback port nothing is currently listening on.
+func freePort() int {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	Expect(err).NotTo(HaveOccurred())
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port
 }
 
 // respondOnce subscribes to vin_allowed and replies with body to the first
@@ -139,8 +163,9 @@ var _ = Describe("Connector", func() {
 
 	Context("with a responder slower than the timeout", func() {
 		It("fails open once the timeout elapses, without blocking past it", func() {
+			delay := 2 * connectornats.VinAllowedTimeout
 			sub, err := responderConn.Subscribe("vin_allowed", func(msg *natsclient.Msg) {
-				time.Sleep(2 * connectornats.VinAllowedTimeout)
+				time.Sleep(delay)
 				_ = msg.Respond([]byte(`{"allowed":false}`))
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -164,10 +189,39 @@ var _ = Describe("Connector", func() {
 		})
 	})
 
-	Context("connecting to an unreachable server", func() {
-		It("returns an error", func() {
-			_, err := connectornats.NewConnector(connectornats.Config{URL: "nats://127.0.0.1:1"}, noop.NewCollector(), logger)
-			Expect(err).To(HaveOccurred())
+	Context("constructed before the NATS server is listening", func() {
+		var url string
+
+		BeforeEach(func() {
+			connectornats.ReconnectWait = 50 * time.Millisecond
+			DeferCleanup(func() { connectornats.ReconnectWait = time.Second })
+			url = fmt.Sprintf("nats://127.0.0.1:%d", freePort())
+		})
+
+		It("constructs, fails open visibly while down, and enforces once the server comes up", func() {
+			c, err := connectornats.NewConnector(connectornats.Config{URL: url}, noop.NewCollector(), logger)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(c.Close)
+			Expect(findLogEntry(hook, "nats_connector_connect_pending")).NotTo(BeNil())
+
+			start := time.Now()
+			allowed, err := c.VinAllowed("VIN1")
+			Expect(err).To(MatchError(connectornats.ErrNotConnected))
+			Expect(allowed).To(BeTrue())
+			Expect(time.Since(start)).To(BeNumerically("<", connectornats.VinAllowedTimeout))
+			Expect(findLogEntry(hook, "nats_connector_vin_allowed_fail_open")).NotTo(BeNil())
+
+			lateServer := startNatsServerAt(url)
+			DeferCleanup(lateServer.Shutdown)
+			lateResponder, err := natsclient.Connect(lateServer.ClientURL())
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(lateResponder.Close)
+			respondOnce(lateResponder, []byte(`{"allowed":false}`))
+
+			Eventually(func() (bool, error) {
+				return c.VinAllowed("VIN1")
+			}, 5*time.Second, 50*time.Millisecond).Should(BeFalse())
+			Expect(findLogEntry(hook, "nats_connector_connected")).NotTo(BeNil())
 		})
 	})
 })
