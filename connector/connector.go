@@ -5,12 +5,24 @@ package connector
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/teslamotors/fleet-telemetry/connector/adapter/file"
 	"github.com/teslamotors/fleet-telemetry/connector/adapter/nats"
 	logrus "github.com/teslamotors/fleet-telemetry/logger"
 	"github.com/teslamotors/fleet-telemetry/metrics"
+	"github.com/teslamotors/fleet-telemetry/metrics/adapter"
 )
+
+var (
+	serverMetricsRegistry serverMetrics
+	serverMetricsOnce     sync.Once
+)
+
+type serverMetrics struct {
+	configureErrorCount adapter.Counter
+	unavailableCount    adapter.Counter
+}
 
 // Connector is a data source that can answer capability checks, e.g. vin_allowed.
 type Connector interface {
@@ -54,7 +66,8 @@ func NewProvider(config Config, metricsCollector metrics.MetricCollector, logger
 }
 
 // VinAllowed reports whether vin may connect. With no vin_allowed capability configured,
-// it admits every vin.
+// it admits every vin. A configured-but-failed connector is never nil here (see
+// configureFailed), so this pass-through only ever means "not configured".
 func (c *Provider) VinAllowed(vin string) (bool, error) {
 	if c.VinAllowedConnector == nil {
 		return true, nil
@@ -74,13 +87,15 @@ func (c *Provider) Close() {
 }
 
 func (c *Provider) configure(metricsCollector metrics.MetricCollector, logger *logrus.Logger) {
+	serverMetricsOnce.Do(func() { registerMetrics(metricsCollector) })
+
 	if c.config.File != nil && len(c.config.File.Capabilities) > 0 {
 		connector, err := file.NewConnector(*c.config.File, metricsCollector, logger)
 		if err == nil {
 			c.Connectors.File = connector
 			c.configureConnectorCapabilities(connector, c.config.File.Capabilities)
 		} else {
-			logger.ErrorLog("connector_provider_configure_sources_file_error", err, nil)
+			c.configureFailed("file", err, c.config.File.Capabilities)
 		}
 	}
 
@@ -90,9 +105,19 @@ func (c *Provider) configure(metricsCollector metrics.MetricCollector, logger *l
 			c.Connectors.Nats = connector
 			c.configureConnectorCapabilities(connector, c.config.Nats.Capabilities)
 		} else {
-			logger.ErrorLog("connector_provider_configure_sources_nats_error", err, nil)
+			c.configureFailed("nats", err, c.config.Nats.Capabilities)
 		}
 	}
+}
+
+// configureFailed assigns a stand-in to a connector's capabilities when it
+// couldn't be built. Leaving them nil would read as "not configured", admitting
+// every vin with nothing logged or counted; the stand-in still fails open, but
+// visibly on every check.
+func (c *Provider) configureFailed(name string, err error, capabilities []string) {
+	serverMetricsRegistry.configureErrorCount.Inc(adapter.Labels{"connector": name})
+	c.logger.ErrorLog("data_connector_configure_error", err, logrus.LogInfo{"connector": name, "capabilities": capabilities})
+	c.configureConnectorCapabilities(&unavailableConnector{name: name, err: err, logger: c.logger}, capabilities)
 }
 
 func (c *Provider) configureConnectorCapabilities(connector Connector, capabilities []string) {
@@ -111,4 +136,36 @@ func (c *Provider) setCapabilityByName(name string, connector Connector) {
 	default:
 		c.logger.Log(logrus.WARN, fmt.Sprintf("unknown capability %s", name), logrus.LogInfo{})
 	}
+}
+
+// unavailableConnector stands in for a configured connector that failed to
+// construct: every check fails open, logged and counted.
+type unavailableConnector struct {
+	name   string
+	err    error
+	logger *logrus.Logger
+}
+
+func (u *unavailableConnector) VinAllowed(vin string) (bool, error) {
+	serverMetricsRegistry.unavailableCount.Inc(adapter.Labels{"connector": u.name})
+	u.logger.ErrorLog("data_connector_unavailable_fail_open", u.err, logrus.LogInfo{"connector": u.name, "vin": vin})
+	return true, fmt.Errorf("data connector %s unavailable: %w", u.name, u.err)
+}
+
+func (u *unavailableConnector) Close() error {
+	return nil
+}
+
+func registerMetrics(metricsCollector metrics.MetricCollector) {
+	serverMetricsRegistry.configureErrorCount = metricsCollector.RegisterCounter(adapter.CollectorOptions{
+		Name:   "data_connector_configure_error_count",
+		Help:   "The number of configured data connectors that failed to construct.",
+		Labels: []string{"connector"},
+	})
+
+	serverMetricsRegistry.unavailableCount = metricsCollector.RegisterCounter(adapter.CollectorOptions{
+		Name:   "data_connector_unavailable_fail_open_count",
+		Help:   "The number of vehicles admitted because their capability's configured data connector failed to construct (fail-open).",
+		Labels: []string{"connector"},
+	})
 }
