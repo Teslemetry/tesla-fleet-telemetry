@@ -232,6 +232,12 @@ func transformValue(value interface{}, includeTypes bool, vin string) (interface
 	case *protos.Value_MediaStatusValue:
 		outputType = "mediaStatus"
 		outputValue = v.MediaStatusValue.String()
+	case *protos.Value_CruiseStateValue:
+		outputType = "cruiseState"
+		outputValue = v.CruiseStateValue.String()
+	case *protos.Value_PowerTransferStatusValue:
+		outputType = "powerTransferStatus"
+		outputValue = v.PowerTransferStatusValue.String()
 	default:
 		return nil, false
 	}
