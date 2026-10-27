@@ -238,9 +238,9 @@ func transformValue(value interface{}, includeTypes bool, vin string) (interface
 	case *protos.Value_PowerTransferStatusValue:
 		outputType = "powerTransferStatus"
 		outputValue = v.PowerTransferStatusValue.String()
-	case *protos.Value_DriverAssistanceStateValue:
-		outputType = "driverAssistanceState"
-		outputValue = v.DriverAssistanceStateValue.String()
+	case *protos.Value_AutomaticEmergencyBrakingStateValue:
+		outputType = "automaticEmergencyBrakingState"
+		outputValue = v.AutomaticEmergencyBrakingStateValue.String()
 	default:
 		return nil, false
 	}

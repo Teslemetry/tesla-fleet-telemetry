@@ -301,15 +301,14 @@ enum Field {
   Cabin12vPortKeepOn = 270; // Semi-truck only
   Cabin48vPortKeepOn = 271; // Semi-truck only
 
+  // fields 272-277 are first available in firmware versions 2026.32.300 and 2026.38.6
+
   AccessoryRail = 272;
   PowerTransferStatus = 273;
   AutomaticEmergencyBrakingState = 274;
   RollingResistanceCoefficient = 275;
-  LifetimeDcChargeEnergyKwh = 277;
-  SemiVehicleMassKg = 278; // Semi-truck only
-
-  DriverAssistanceState = 279;
-  FsdSoftwareVersion = 280;
+  LifetimeDcChargeEnergyKwh = 276;
+  SemiVehicleMassKg = 277; // Semi-truck only
 }
 
 // ChargingState is deprecated and not used
@@ -691,11 +690,12 @@ enum CabinPortKeepOnState {
   CabinPortKeepOnStateOn = 2;
 }
 
-enum DriverAssistanceStateValue {
-  DriverAssistanceStateUnknown = 0;
-  DriverAssistanceStateOff = 1;
-  DriverAssistanceStateTacc = 2;
-  DriverAssistanceStateFsd = 3;
+enum AutomaticEmergencyBrakingStateValue {
+  AutomaticEmergencyBrakingStateUnknown = 0;
+  AutomaticEmergencyBrakingStateUnavailable = 1;
+  AutomaticEmergencyBrakingStateStandby = 2;
+  AutomaticEmergencyBrakingStateEnabled = 3;
+  AutomaticEmergencyBrakingStateStandstill = 4;
 }
 
 enum PowerTransferStatusValue {
@@ -806,7 +806,7 @@ message Value {
     SunroofInstalledState sunroof_installed_state_value = 54;
     CabinPortKeepOnState cabin_port_keep_on_value = 55;
     PowerTransferStatusValue power_transfer_status_value = 57;
-    DriverAssistanceStateValue driver_assistance_state_value = 59;
+    AutomaticEmergencyBrakingStateValue automatic_emergency_braking_state_value = 60;
   }
 }
 
